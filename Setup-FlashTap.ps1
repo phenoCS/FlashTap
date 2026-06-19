@@ -1,7 +1,7 @@
-﻿<# LocalCoder 一键安装主脚本 #>
-# 此脚本由 一键安装LocalCoder.bat 调用
+﻿<# FlashTap 一键安装主脚本 #>
+# 此脚本由 一键安装FlashTap.bat 调用
 # 作用：按照固定顺序执行 Ollama 安装、VS Code 安装/配置、模型下载与环境校验
-# 目前实际入口文件：一键安装LocalCoder.bat
+# 目前实际入口文件：一键安装FlashTap.bat
 # 严格按用户要求：所有配置来自用户提供的 settings.json / config.yaml / extensions.list
 # 脚本只负责流程编排，不直接写入业务配置代码
 
@@ -234,7 +234,7 @@ function Run-Python {
 
 Write-Host ''
 Write-Host '════════════════════════════════════════════════════════' -ForegroundColor Cyan
-Write-Host '      LocalCoder · AI 编程助手 一键安装工具' -ForegroundColor Cyan
+Write-Host '      FlashTap · AI 编程助手 一键安装工具' -ForegroundColor Cyan
 Write-Host '════════════════════════════════════════════════════════' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  [信息] 本工具将自动完成以下步骤：           ' -ForegroundColor White
@@ -719,7 +719,7 @@ ls "$EXT_DIR/package.json" >/dev/null 2>&1 && echo "=== CPP_INSTALL_OK ===" || e
 
 int main() {
     std::vector<std::string> msg = {
-        "Hello, LocalCoder!",
+        "Hello, FlashTap!",
         "C++ build environment: g++ (WSL)",
         "Press F5 to build and debug."
     };
@@ -808,7 +808,7 @@ int main() {
 # ── 第五步：安装完成 ──
 Write-Host ''
 Write-Host '════════════════════════════════════════════════════════' -ForegroundColor Green
-Write-Host '      LocalCoder 安装完成！' -ForegroundColor Green
+Write-Host '      FlashTap 安装完成！' -ForegroundColor Green
 Write-Host '════════════════════════════════════════════════════════' -ForegroundColor Green
 Write-Host ''
 Write-Host '  【新手快速上手 3 步】' -ForegroundColor Cyan

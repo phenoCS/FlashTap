@@ -1,4 +1,4 @@
-﻿# LocalCoder: C++ 编译环境自动配置
+﻿# FlashTap: C++ 编译环境自动配置
 # 优先级：系统 g++ > WSL发行版(自动安装编译工具) > 手动安装提示
 # 非强制模块：任何失败仅输出提示，绝不中断主安装流程
 
@@ -282,7 +282,7 @@ function Setup-WslDevEnv {
 
 int main() {
     std::vector<std::string> msg = {
-        "Hello, LocalCoder!",
+        "Hello, FlashTap!",
         "C++ build environment: g++ (WSL)",
         "Press F5 to build and debug."
     };
@@ -317,7 +317,7 @@ int main() {
     "folders": [
         {
             "uri": "vscode-remote://wsl+$Distro/home/lc-cpp-workspace",
-            "name": "LocalCoder C++ (WSL)"
+            "name": "FlashTap C++ (WSL)"
         }
     ],
     "settings": {
@@ -332,7 +332,7 @@ int main() {
     }
 }
 "@
-        $workspaceFile = [System.IO.Path]::Combine($PROJECT_DIR, 'LocalCoder-CPP.code-workspace')
+        $workspaceFile = [System.IO.Path]::Combine($PROJECT_DIR, 'FlashTap-CPP.code-workspace')
         $utf8noBom = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllText($workspaceFile, $workspaceJson, $utf8noBom)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-为 LocalCoder 配置 Continue 插件，使用本地 Ollama 模型。
+为 FlashTap 配置 Continue 插件，使用本地 Ollama 模型。
 同时写入 config.json（Continue 0.8+ 新版格式）和 config.yaml（旧版兼容）。
 """
 
@@ -34,7 +34,7 @@ CONFIG_JSON = {
 }
 
 # ── 旧版 YAML 配置（Continue <0.8 向后兼容，使用 name 字段） ──
-CONFIG_YAML = """name: LocalCoder
+CONFIG_YAML = """name: FlashTap
 version: 1.0.0
 schema: v1
 models:
@@ -144,7 +144,7 @@ def configure():
 
 def main():
     write_log("=" * 50)
-    write_log("LocalCoder Continue 配置")
+    write_log("FlashTap Continue 配置")
     write_log("=" * 50)
 
     try:

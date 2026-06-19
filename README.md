@@ -1,4 +1,4 @@
-# LocalCoder — 本地 AI 编程助手 一键安装
+# FlashTap — 本地 AI 编程助手 一键安装
 
 适配：**RTX 5060 8GB 显存笔记本** | 支持：**Windows 10 / Windows 11** | 网络：**纯国内源**
 
@@ -15,8 +15,8 @@
 
 ## 🚀 傻瓜式安装（一步到位）
 
-1. 把整个 LocalCoder 文件夹解压到你想要安装的位置（比如 `D:\LocalCoder\`）
-2. 找到文件 **`一键安装LocalCoder.bat`**
+1. 把整个 FlashTap 文件夹解压到你想要安装的位置（比如 `D:\FlashTap\`）
+2. 找到文件 **`一键安装FlashTap.bat`**
 3. **右键点击 → 选择【以管理员身份运行】**
 4. 等待约 10 分钟，全程自动完成，不用管
 
@@ -26,8 +26,8 @@
 
 | 文件名 | 说明 |
 |--------|------|
-| `一键安装LocalCoder.bat` | 启动入口，用户双击（右键管理员）这个 |
-| `Setup-LocalCoder.ps1` | 主控制脚本，按顺序执行安装 |
+| `一键安装FlashTap.bat` | 启动入口，用户双击（右键管理员）这个 |
+| `Setup-FlashTap.ps1` | 主控制脚本，按顺序执行安装 |
 | `install-localcoder.ps1` | 子脚本：安装 Ollama + 配置显存限制 6GB |
 | `download-models.py` | 子脚本：从魔搭下载模型 |
 | `install-vscode.ps1` | 子脚本：静默安装 VS Code + Continue 扩展 |
@@ -57,7 +57,7 @@
 
 1. 打开 VS Code
 2. 按 `Ctrl+Shift+P`，输入 `Continue: Open Chat`
-3. 开始用 LocalCoder 写代码！
+3. 开始用 FlashTap 写代码！
 
 快捷键：默认 `Ctrl+L` 打开对话
 
@@ -73,7 +73,7 @@
 - 换行符错误（打包时已修复）
 
 **解决**：
-1. 必须右键 → 以管理员身份运行 `一键安装LocalCoder.bat`
+1. 必须右键 → 以管理员身份运行 `一键安装FlashTap.bat`
 2. 确认 Python 已安装，且在安装时勾选了 "Add Python to PATH"
 3. 如果还是不行，打开 `cmd`，输入 `python --version`，看能不能输出版本号，不能就是没加 PATH
 
@@ -115,7 +115,7 @@
 
 **原因**：模型 + Ollama + VS Code 大约需要 15GB 空间
 
-**解决**：换个空间够的磁盘放 LocalCoder 文件夹。
+**解决**：换个空间够的磁盘放 FlashTap 文件夹。
 
 ---
 

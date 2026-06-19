@@ -1,4 +1,4 @@
-﻿# LocalCoder 环境自检脚本
+﻿# FlashTap 环境自检脚本
 # 纯离线运行，无网络请求
 
 $ErrorActionPreference = 'Stop'
@@ -256,7 +256,7 @@ function Check-ContinueConfig {
 }
 
 Write-Host "====================================" -ForegroundColor Cyan
-Write-Host "  LocalCoder 环境自检"
+Write-Host "  FlashTap 环境自检"
 Write-Host "====================================" -ForegroundColor Cyan
 
 Check-Ollama

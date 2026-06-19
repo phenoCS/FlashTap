@@ -1,10 +1,10 @@
 ﻿﻿@echo off
 chcp 65001 >nul 2>&1
 cd /d "%~dp0"
-title LocalCoder - One-Click Install
+title FlashTap - One-Click Install
 
 echo =============================================
-echo   LocalCoder - AI Programming Assistant
+echo   FlashTap - AI Programming Assistant
 echo   One-Click Install
 echo =============================================
 echo.
@@ -24,7 +24,7 @@ echo [INFO] Administrator check passed
 echo [INFO] Launching main installer...
 echo.
 
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-LocalCoder.ps1"
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Setup-FlashTap.ps1"
 
 echo.
 echo Installation finished. Press any key to exit...

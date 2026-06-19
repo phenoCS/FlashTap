@@ -1,4 +1,4 @@
-﻿# LocalCoder: VS Code 安装与配置
+﻿# FlashTap: VS Code 安装与配置
 # 1. 静默安装 VS Code
 # 2. 按顺序逐个安装扩展，30秒超时，绝不并发
 # 3. settings.json 原封不动复制
@@ -488,7 +488,7 @@ function Main {
     }
 }
 
-# 直接执行，返回结果供 Setup-LocalCoder.ps1 调用
+# 直接执行，返回结果供 Setup-FlashTap.ps1 调用
 $mainResult = Main
 if (-not $mainResult.ExtSuccess) {
     Write-Log '[警告] 部分扩展安装失败，请检查上方日志' 'WARNING'

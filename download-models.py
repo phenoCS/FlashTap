@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Model download and Ollama import for LocalCoder.
+Model download and Ollama import for FlashTap.
 Supports modelscope snapshot download with resume.
 """
 

@@ -1,4 +1,4 @@
-﻿<# LocalCoder: Ollama 安装与配置 #>
+﻿<# FlashTap: Ollama 安装与配置 #>
 
 $ErrorActionPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
