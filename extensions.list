@@ -1,0 +1,7 @@
+# VS Code 扩展白名单 - 纯本地编程助手
+# 只允许安装以下5个扩展，禁止任何其他扩展
+continue.continue
+ms-ceintl.vscode-language-pack-zh-hans
+ms-vscode.cpptools
+ms-vscode-remote.remote-wsl
+formulahendry.code-runner

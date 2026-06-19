@@ -1,0 +1,19 @@
+# Ollama 安装包 (太大，GitHub 限制 100MB)
+OllamaSetup.exe
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志
+*.log
+
+# 备份文件
+*.backup-*
+
+# 项目状态文档
+项目状态.txt
+
+# VS Code 用户配置 (含个人路径)
+vscode-settings.json
