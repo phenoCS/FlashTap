@@ -216,14 +216,16 @@ function Setup-WslDevEnv {
     "tasks": [
         {
             "type": "shell",
-            "label": "C++: g++ build active file",
+            "label": "C/C++: g++ 生成活动文件",
             "command": "/usr/bin/g++",
             "args": [
                 "-g",
                 "${file}",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}",
-                "-std=c++17"
+                "-std=c++11",
+                "-lcurl",
+                "-pthread"
             ],
             "options": {
                 "cwd": "${fileDirname}"
@@ -235,18 +237,21 @@ function Setup-WslDevEnv {
                 "kind": "build",
                 "isDefault": true
             },
+            "presentation": {
+                "reveal": "silent"
+            },
             "detail": "compiler: /usr/bin/g++"
         }
     ]
 }
 '@
 
-        $launchJson = @'
+$launchJson = @'
 {
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "(gdb) Launch",
+            "name": "g++ 调试运行",
             "type": "cppdbg",
             "request": "launch",
             "program": "${fileDirname}/${fileBasenameNoExtension}",
@@ -259,17 +264,20 @@ function Setup-WslDevEnv {
             "miDebuggerPath": "/usr/bin/gdb",
             "setupCommands": [
                 {
-                    "description": "Enable pretty-printing for gdb",
+                    "description": "为 gdb 启用整齐打印",
                     "text": "-enable-pretty-printing",
                     "ignoreFailures": true
                 },
                 {
-                    "description": "Set Disassembly Flavor to Intel",
+                    "description": "将反汇编风格设置为 Intel",
                     "text": "-gdb-set disassembly-flavor intel",
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "C++: g++ build active file"
+            "preLaunchTask": "C/C++: g++ 生成活动文件",
+            "logging": {
+                "engineLogging": false
+            }
         }
     ]
 }

@@ -606,7 +606,7 @@ ls "$EXT_DIR/package.json" >/dev/null 2>&1 && echo "=== CPP_INSTALL_OK ===" || e
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "GDB 调试 (WSL)",
+            "name": "g++ 调试运行",
             "type": "cppdbg",
             "request": "launch",
             "program": "${fileDirname}/${fileBasenameNoExtension}",
@@ -629,7 +629,7 @@ ls "$EXT_DIR/package.json" >/dev/null 2>&1 && echo "=== CPP_INSTALL_OK ===" || e
                     "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "C++: g++ build active file",
+            "preLaunchTask": "C/C++: g++ 生成活动文件",
             "logging": {
                 "engineLogging": false
             }
@@ -641,21 +641,23 @@ ls "$EXT_DIR/package.json" >/dev/null 2>&1 && echo "=== CPP_INSTALL_OK ===" || e
                         $null = & wsl.exe -d $distroName -- bash -c "mkdir -p $wslWorkspace/.vscode && echo '$launchB64' | base64 -d > $wslWorkspace/.vscode/launch.json" 2>&1
                         Write-Log "[成功] launch.json (WSL GDB) 已配置" 'Green'
 
-                        # ── 生成 tasks.json（编译任务，dedicated panel 避免终端复用困扰） ──
+                        # ── 生成 tasks.json（编译任务，reveal: silent 避免弹窗） ──
                         $tasksJson = @'
 {
     "version": "2.0.0",
     "tasks": [
         {
             "type": "shell",
-            "label": "C++: g++ build active file",
+            "label": "C/C++: g++ 生成活动文件",
             "command": "/usr/bin/g++",
             "args": [
                 "-g",
                 "${file}",
                 "-o",
                 "${fileDirname}/${fileBasenameNoExtension}",
-                "-std=c++17"
+                "-std=c++11",
+                "-lcurl",
+                "-pthread"
             ],
             "options": {
                 "cwd": "${fileDirname}"
@@ -668,8 +670,7 @@ ls "$EXT_DIR/package.json" >/dev/null 2>&1 && echo "=== CPP_INSTALL_OK ===" || e
                 "isDefault": true
             },
             "presentation": {
-                "panel": "dedicated",
-                "clear": true
+                "reveal": "silent"
             },
             "detail": "compiler: /usr/bin/g++"
         }
