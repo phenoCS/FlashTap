@@ -169,39 +169,12 @@ function Get-Ollama-Local-Installer {
             Write-Log "  [信息] 尝试: $url"
             try {
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
-
                 $ProgressPreference = 'SilentlyContinue'
-                $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                $wc = New-Object System.Net.WebClient
-                $wc.Headers.Add('User-Agent', 'Mozilla/5.0')
-
-                $lastPct = -1
-                Register-ObjectEvent -InputObject $wc -EventName DownloadProgressChanged -SourceIdentifier 'DownloadProgress' -Action {
-                    $pct = $EventArgs.ProgressPercentage
-                    if ($pct -ne $lastPct) {
-                        $lastPct = $pct
-                        $down = [math]::Round($EventArgs.BytesReceived / 1MB, 1)
-                        $total = [math]::Round($EventArgs.TotalBytesToReceive / 1MB, 1)
-                        $barLen = 40
-                        $filled = [math]::Round($pct * $barLen / 100)
-                        $empty = $barLen - $filled - 1
-                        if ($empty -lt 0) { $empty = 0 }
-                        $bar = '[' + ('=' * $filled) + '>' + (' ' * $empty) + ']'
-                        Write-Host "`r  $bar $pct%  $down/$total MB" -NoNewline
-                    }
-                } | Out-Null
-
-                $wc.DownloadFileAsync($url, $installer)
-                while ($wc.IsBusy) { Start-Sleep -Milliseconds 500 }
-                $wc.Dispose()
-                Unregister-Event -SourceIdentifier 'DownloadProgress' -ErrorAction SilentlyContinue
-                Write-Host ''
+                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -ErrorAction Stop
 
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
-                    $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
                     $sizeMB = [math]::Round((Get-Item $installer).Length / 1MB, 1)
-                    $speed = if ($elapsed -gt 0) { [math]::Round($sizeMB / $elapsed, 1) } else { '?' }
-                    Write-Log "  [成功] OllamaSetup.exe 下载完成 ${sizeMB}MB 耗时${elapsed}s 速度${speed}MB/s"
+                    Write-Log "  [成功] OllamaSetup.exe 下载完成 (${sizeMB}MB)"
                     $downloadOk = $true
                     return $installer
                 }
