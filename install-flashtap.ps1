@@ -83,8 +83,7 @@ function Get-Ollama-Local-Installer {
     # 本地没有，尝试从 GitHub Release 自动下载
     if ($OLLAMA_DOWNLOAD_URL -and ($OLLAMA_DOWNLOAD_URL -notmatch 'USER/REPO')) {
         Write-Log '  [信息] 同目录未找到 OllamaSetup.exe，正在自动下载...'
-        Write-Log "  [信息] 下载地址: $OLLAMA_DOWNLOAD_URL"
-        Write-Log '  [信息] 约 300MB，请耐心等待（国内网络可能较慢）...'
+        Write-Log '  [信息] 约 300MB，依次尝试镜像源，请耐心等待...'
 
         $downloadOk = $false
         $urls = @($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)
@@ -93,8 +92,42 @@ function Get-Ollama-Local-Installer {
             if ($downloadOk) { break }
             Write-Log "  [信息] 尝试: $url"
             try {
-                $ProgressPreference = 'Continue'
-                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+                $ProgressPreference = 'SilentlyContinue'
+                $req = [System.Net.HttpWebRequest]::Create($url)
+                $req.Timeout = 10000
+                $req.ReadWriteTimeout = 30000
+                $req.AllowAutoRedirect = $true
+                $req.MaximumAutomaticRedirections = 5
+                $resp = $req.GetResponse()
+                $totalBytes = $resp.ContentLength
+                $respStream = $resp.GetResponseStream()
+                $fs = [System.IO.File]::Create($installer)
+                $buffer = New-Object byte[] 8192
+                $downloaded = 0L
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $lastReport = 0L
+                
+                while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $fs.Write($buffer, 0, $read)
+                    $downloaded += $read
+                    if (($sw.ElapsedMilliseconds -gt 500) -or ($downloaded -eq $totalBytes)) {
+                        $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
+                        $speed = if ($sw.ElapsedMilliseconds -gt 0) { [math]::Round($downloaded / 1MB / ($sw.Elapsed.TotalSeconds), 1) } else { 0 }
+                        $barLen = 30
+                        $filled = [math]::Round($pct * $barLen / 100)
+                        $bar = '[' + ('█' * $filled) + ('░' * ($barLen - $filled)) + ']'
+                        $downMB = [math]::Round($downloaded / 1MB, 1)
+                        $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
+                        $line = "  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s"
+                        try { Write-Host $line -NoNewline; Write-Host "`r" -NoNewline } catch { }
+                        $sw.Restart()
+                    }
+                }
+                $fs.Close()
+                $respStream.Close()
+                $resp.Close()
+                Write-Host ''
+                
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
                     Write-Log '  [成功] OllamaSetup.exe 下载完成'
                     $downloadOk = $true
