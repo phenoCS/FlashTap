@@ -155,62 +155,46 @@ function Get-Ollama-Local-Installer {
             if ($downloadOk) { break }
             Write-Log "  [信息] 尝试: $url"
             try {
-                # BITS 多线程下载（Windows 自带，最快）
-                Import-Module BitsTransfer -ErrorAction SilentlyContinue
-                Start-BitsTransfer -Source $url -Destination $installer -Priority High -ErrorAction Stop
-                
+                Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+
+                $ProgressPreference = 'SilentlyContinue'
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $wc = New-Object System.Net.WebClient
+                $wc.Headers.Add('User-Agent', 'Mozilla/5.0')
+
+                $lastPct = -1
+                Register-ObjectEvent -InputObject $wc -EventName DownloadProgressChanged -SourceIdentifier 'DownloadProgress' -Action {
+                    $pct = $EventArgs.ProgressPercentage
+                    if ($pct -ne $lastPct) {
+                        $lastPct = $pct
+                        $down = [math]::Round($EventArgs.BytesReceived / 1MB, 1)
+                        $total = [math]::Round($EventArgs.TotalBytesToReceive / 1MB, 1)
+                        $barLen = 40
+                        $filled = [math]::Round($pct * $barLen / 100)
+                        $empty = $barLen - $filled - 1
+                        if ($empty -lt 0) { $empty = 0 }
+                        $bar = '[' + ('=' * $filled) + '>' + (' ' * $empty) + ']'
+                        Write-Host "`r  $bar $pct%  $down/$total MB" -NoNewline
+                    }
+                } | Out-Null
+
+                $wc.DownloadFileAsync($url, $installer)
+                while ($wc.IsBusy) { Start-Sleep -Milliseconds 500 }
+                $wc.Dispose()
+                Unregister-Event -SourceIdentifier 'DownloadProgress' -ErrorAction SilentlyContinue
+                Write-Host ''
+
                 if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
-                    Write-Log '  [成功] OllamaSetup.exe 下载完成'
+                    $elapsed = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+                    $sizeMB = [math]::Round((Get-Item $installer).Length / 1MB, 1)
+                    $speed = if ($elapsed -gt 0) { [math]::Round($sizeMB / $elapsed, 1) } else { '?' }
+                    Write-Log "  [成功] OllamaSetup.exe 下载完成 ${sizeMB}MB 耗时${elapsed}s 速度${speed}MB/s"
                     $downloadOk = $true
                     return $installer
                 }
             } catch {
-                Write-Log "  [警告] BITS 下载失败，改用单线程: $($_.Exception.Message)"
+                Write-Log "  [警告] 下载失败: $($_.Exception.Message)"
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
-                try {
-                    $ProgressPreference = 'SilentlyContinue'
-                    $req = [System.Net.HttpWebRequest]::Create($url)
-                    $req.Timeout = 10000
-                    $req.ReadWriteTimeout = 30000
-                    $req.AllowAutoRedirect = $true
-                    $req.MaximumAutomaticRedirections = 5
-                    $resp = $req.GetResponse()
-                    $totalBytes = $resp.ContentLength
-                    $respStream = $resp.GetResponseStream()
-                    $fs = [System.IO.File]::Create($installer)
-                    $buffer = New-Object byte[] 65536
-                    $downloaded = 0L
-                    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                    
-                    while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                        $fs.Write($buffer, 0, $read)
-                        $downloaded += $read
-                        if ($sw.ElapsedMilliseconds -gt 500) {
-                            $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
-                            $speed = [math]::Round($downloaded / 1MB / [math]::Max(1, $sw.Elapsed.TotalSeconds), 1)
-                            $barLen = 40
-                            $filled = [math]::Round($pct * $barLen / 100)
-                            $bar = '[' + ('=' * $filled) + ('>' * [math]::Min(1, $barLen - $filled)) + (' ' * [math]::Max(0, $barLen - $filled - 1)) + ']'
-                            $downMB = [math]::Round($downloaded / 1MB, 1)
-                            $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
-                            Write-Host "`r  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s" -NoNewline
-                            $sw.Restart()
-                        }
-                    }
-                    $fs.Close()
-                    $respStream.Close()
-                    $resp.Close()
-                    Write-Host ''
-                    
-                    if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
-                        Write-Log '  [成功] OllamaSetup.exe 下载完成'
-                        $downloadOk = $true
-                        return $installer
-                    }
-                } catch {
-                    Write-Log "  [警告] 单线程下载也失败: $($_.Exception.Message)"
-                    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
-                }
             }
         }
     }
