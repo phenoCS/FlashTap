@@ -15,6 +15,7 @@ $LOG_FILE = Join-Path $PROJECT_DIR 'install.log'
 
 # ── OllamaSetup.exe 下载地址（发布 Release 后填入实际 URL） ──
 $OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download/OllamaSetup.exe'
+$OLLAMA_DOWNLOAD_MIRROR = 'https://ghfast.top/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
 
 # ── 日志函数 ──
 function Write-Log {
@@ -79,19 +80,30 @@ function Get-Ollama-Local-Installer {
     if ($OLLAMA_DOWNLOAD_URL -and ($OLLAMA_DOWNLOAD_URL -notmatch 'USER/REPO')) {
         Write-Log '  [信息] 同目录未找到 OllamaSetup.exe，正在自动下载...'
         Write-Log "  [信息] 下载地址: $OLLAMA_DOWNLOAD_URL"
-        try {
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $OLLAMA_DOWNLOAD_URL -OutFile $installer -UseBasicParsing -ErrorAction Stop
-            if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
-                Write-Log '  [成功] OllamaSetup.exe 下载完成'
-                return $installer
-            } else {
-                Write-Log '  [错误] 下载的文件无效或损坏'
+        Write-Log '  [信息] 约 300MB，请耐心等待（国内网络可能较慢）...'
+
+        $downloadOk = $false
+        $urls = @($OLLAMA_DOWNLOAD_URL)
+        if ($OLLAMA_DOWNLOAD_MIRROR) { $urls += $OLLAMA_DOWNLOAD_MIRROR }
+
+        foreach ($url in $urls) {
+            if ($downloadOk) { break }
+            Write-Log "  [信息] 尝试: $url"
+            try {
+                $ProgressPreference = 'Continue'
+                Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+                if ((Test-Path -LiteralPath $installer) -and (Test-ValidExe -Path $installer)) {
+                    Write-Log '  [成功] OllamaSetup.exe 下载完成'
+                    $downloadOk = $true
+                    return $installer
+                } else {
+                    Write-Log '  [错误] 下载的文件无效或损坏'
+                    Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                Write-Log "  [警告] 下载失败: $($_.Exception.Message)"
                 Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
             }
-        } catch {
-            Write-Log "  [错误] 下载失败: $($_.Exception.Message)"
-            Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
         }
     }
 
