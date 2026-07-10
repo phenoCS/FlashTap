@@ -80,10 +80,37 @@ function Get-Ollama-Local-Installer {
         return $installer
     }
 
-    # 本地没有，尝试从 GitHub Release 自动下载
+    # 本地没有，先尝试 winget 安装（最快，走微软CDN）
+    Write-Log '  [信息] 同目录未找到 OllamaSetup.exe'
+    try {
+        $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+        if ($winget) {
+            Write-Log '  [信息] 尝试 winget 安装（微软CDN，国内最快）...'
+            $wproc = Start-Process -FilePath winget.exe -ArgumentList 'install Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements' -Wait -PassThru -NoNewWindow
+            if ($wproc.ExitCode -eq 0) {
+                $checkPaths = @(
+                    (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
+                    (Join-Path ${env:ProgramFiles} 'Ollama\ollama.exe')
+                )
+                foreach ($cp in $checkPaths) {
+                    if (Test-Path -LiteralPath $cp) {
+                        Write-Log "  [成功] winget 安装完成: $cp"
+                        return $cp
+                    }
+                }
+                Write-Log '  [警告] winget 安装完成但未找到 ollama.exe，改用下载方式'
+            } else {
+                Write-Log "  [警告] winget 安装失败 (退出码: $($wproc.ExitCode))，改用下载方式"
+            }
+        }
+    } catch {
+        Write-Log '  [警告] winget 不可用，改用下载方式'
+    }
+
+    # winget 失败，从网络下载
     if ($OLLAMA_DOWNLOAD_URL -and ($OLLAMA_DOWNLOAD_URL -notmatch 'USER/REPO')) {
-        Write-Log '  [信息] 同目录未找到 OllamaSetup.exe，正在自动下载...'
-        Write-Log '  [信息] 约 300MB，依次尝试镜像源，请耐心等待...'
+        Write-Log '  [信息] 正在自动下载 OllamaSetup.exe...'
+        Write-Log '  [信息] 约 1.4GB，依次尝试镜像源，请耐心等待...'
 
         $downloadOk = $false
         $urls = @($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)
