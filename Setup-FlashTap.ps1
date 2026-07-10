@@ -9,6 +9,11 @@ $ErrorActionPreference = 'Continue'
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# 自动继承系统代理设置
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
+
 $PROJECT_DIR = $PSScriptRoot
 if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
     $PROJECT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -721,6 +726,11 @@ int main() {
 
                         Write-Log '  [信息] 正在下载中文语言包...' 'Cyan'
                         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# 自动继承系统代理设置
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
                         Invoke-WebRequest -Uri 'https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MS-CEINTL/vsextensions/vscode-language-pack-zh-hans/latest/vspackage' -OutFile $langVsix -UseBasicParsing
 
                         # VSIX 本质是 ZIP，直接解压

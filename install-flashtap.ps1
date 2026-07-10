@@ -3,6 +3,11 @@
 $ErrorActionPreference = 'Continue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# 自动继承系统代理设置（不用管理员模式也能走国际网络）
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
+
 # ── 脚本目录检测 ──
 $PROJECT_DIR = $PSScriptRoot
 if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {

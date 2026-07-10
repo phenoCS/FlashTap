@@ -10,6 +10,7 @@ $ProgressPreference = 'Continue'
 
 # 确保 TLS 1.2 可用（旧版 PowerShell 默认不开启）
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+try { $p = [System.Net.WebRequest]::GetSystemWebProxy(); $p.Credentials = [System.Net.CredentialCache]::DefaultCredentials; [System.Net.WebRequest]::DefaultWebProxy = $p } catch {}
 
 # 获取脚本所在目录（兼容 Invoke-Expression 内存执行模式）
 $PROJECT_DIR = $null
