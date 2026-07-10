@@ -86,7 +86,8 @@ function Get-Ollama-Local-Installer {
         $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($winget) {
             Write-Log '  [信息] 尝试 winget 安装（微软CDN，国内最快）...'
-            $wproc = Start-Process -FilePath winget.exe -ArgumentList 'install Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements' -Wait -PassThru -NoNewWindow
+            # --force 强制跳过协议弹窗，直接安装
+            $wproc = Start-Process -FilePath winget.exe -ArgumentList 'install Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements --force' -Wait -PassThru -NoNewWindow
             if ($wproc.ExitCode -eq 0) {
                 $checkPaths = @(
                     (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
