@@ -15,7 +15,11 @@ $LOG_FILE = Join-Path $PROJECT_DIR 'install.log'
 
 # ── OllamaSetup.exe 下载地址（发布 Release 后填入实际 URL） ──
 $OLLAMA_DOWNLOAD_URL = 'https://ollama.com/download/OllamaSetup.exe'
-$OLLAMA_DOWNLOAD_MIRROR = 'https://mirror.ghproxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
+$OLLAMA_DOWNLOAD_MIRRORS = @(
+    'https://ghproxy.net/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
+    'https://gh.con.sh/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe',
+    'https://github.moeyy.xyz/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe'
+)
 
 # ── 日志函数 ──
 function Write-Log {
@@ -83,7 +87,7 @@ function Get-Ollama-Local-Installer {
         Write-Log '  [信息] 约 300MB，请耐心等待（国内网络可能较慢）...'
 
         $downloadOk = $false
-        $urls = @($OLLAMA_DOWNLOAD_MIRROR, $OLLAMA_DOWNLOAD_URL)
+        $urls = @($OLLAMA_DOWNLOAD_MIRRORS) + @($OLLAMA_DOWNLOAD_URL)
 
         foreach ($url in $urls) {
             if ($downloadOk) { break }
