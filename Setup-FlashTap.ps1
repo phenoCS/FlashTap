@@ -309,10 +309,10 @@ if (-not $pyInfo) {
 
     $pyInstaller = Join-Path $env:TEMP 'python-3.12.7-amd64.exe'
 
-    # 官方源 + 华为镜像兜底
+    # 华为镜像优先（国内快），官方源兜底
     $pyUrls = @(
-        'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe',
-        'https://mirrors.huaweicloud.com/python/3.12.7/python-3.12.7-amd64.exe'
+        'https://mirrors.huaweicloud.com/python/3.12.7/python-3.12.7-amd64.exe',
+        'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe'
     )
 
     $pyDownloaded = $false
@@ -320,8 +320,8 @@ if (-not $pyInfo) {
         Write-Log "[信息] 正在下载 Python 3.12.7: $url"
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
-            $req.Timeout = 30000
-            $req.ReadWriteTimeout = 60000
+            $req.Timeout = 60000
+            $req.ReadWriteTimeout = 120000
             $resp = $req.GetResponse()
             $totalBytes = $resp.ContentLength
             $respStream = $resp.GetResponseStream()
@@ -356,24 +356,42 @@ if (-not $pyInfo) {
     }
 
     if ($pyDownloaded) {
-        Write-Log '[信息] 正在静默安装 Python（为所有用户，自动加入 PATH）...'
+        Write-Log '[信息] 正在静默安装 Python 3.12.7（为所有用户，自动加入 PATH）...'
+        Write-Log '[信息] 安装可能需要 1-3 分钟，请耐心等待...' 'Cyan'
         try {
+            # 用 Start-Process 启动并等待退出
+            # InstallAllUsers=1 需要管理员权限（bat 已提权，OK）
+            # PrependPath=1 自动加入 PATH
+            # Include_test=0 不装测试套件（省空间）
             $pyProc = Start-Process -FilePath $pyInstaller -ArgumentList '/quiet', 'InstallAllUsers=1', 'PrependPath=1', 'Include_test=0' -Wait -PassThru
-            if ($pyProc.ExitCode -eq 0) {
+            $pyExitCode = if ($pyProc) { $pyProc.ExitCode } else { -1 }
+
+            if ($pyExitCode -eq 0) {
                 Write-Log '[成功] Python 安装完成' 'Green'
 
                 # 刷新当前进程 PATH（安装器写入了注册表但当前进程 PATH 未更新）
-                $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+                $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+                $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+                $env:Path = "$machinePath;$userPath"
 
-                # 重新检测
+                # 重新检测（等待注册表刷新）
+                Start-Sleep -Seconds 2
                 $pyInfo = Find-PythonExecutable
                 if ($pyInfo) {
-                    Write-Log "[成功] Python 已就绪: $($pyInfo.Exe)" 'Green'
+                    Write-Log "[成功] Python 已就绪: $($pyInfo.Exe) ($($pyInfo.Type))" 'Green'
                 } else {
-                    Write-Log '[警告] Python 安装完成但未能检测到，后续 Python 脚本可能无法运行' 'Yellow'
+                    # 兜底：直接验证 python.exe 是否存在于标准路径
+                    $fallbackPy = Join-Path ${env:ProgramFiles} 'Python312\python.exe'
+                    if (Test-Path -LiteralPath $fallbackPy) {
+                        $pyInfo = @{ Exe = $fallbackPy; Type = 'fallback' }
+                        Write-Log "[成功] Python 已就绪（兜底路径）: $fallbackPy" 'Green'
+                    } else {
+                        Write-Log '[警告] Python 安装完成但未能检测到，后续 Python 脚本可能无法运行' 'Yellow'
+                    }
                 }
             } else {
-                Write-Log "[警告] Python 安装返回非零退出码: $($pyProc.ExitCode)" 'Yellow'
+                Write-Log "[警告] Python 安装返回非零退出码: $pyExitCode" 'Yellow'
+                Write-Log '[信息] 可能原因：权限不足、磁盘空间不够、或安装器被安全软件拦截' 'Yellow'
             }
         } catch {
             Write-Log "[警告] Python 安装异常: $($_.Exception.Message)" 'Yellow'
