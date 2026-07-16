@@ -261,7 +261,7 @@ def get_latest_ollama_version():
     api_urls = [
         "https://api.github.com/repos/ollama/ollama/releases/latest",
         "https://gh-proxy.com/https://api.github.com/repos/ollama/ollama/releases/latest",
-        "https://gh-proxy.com/https://api.github.com/repos/ollama/ollama/releases/latest",
+        "https://ghproxy.net/https://api.github.com/repos/ollama/ollama/releases/latest",
     ]
 
     for url in api_urls:
@@ -315,37 +315,20 @@ def check_and_update_ollama():
             write_log("Ollama 版本满足要求，无需更新")
             return
 
-        write_log("正在自动更新 Ollama...")
+        write_log("正在检查 Ollama 版本...")
 
-        # ── 方法 1：winget（Windows 包管理器，最快，无需下载完整安装包）──
-        write_log("尝试方法 1/3: winget upgrade ...")
-        try:
-            wr = subprocess.run(
-                ["winget", "upgrade", "Ollama.Ollama", "--accept-source-agreements", "--accept-package-agreements"],
-                capture_output=True, encoding="utf-8", errors="replace", timeout=300
-            )
-            if wr.returncode == 0:
-                write_log("winget 更新成功，验证中...")
-                time.sleep(3)
-                vcheck = subprocess.run(
-                    ["ollama", "--version"],
-                    capture_output=True, encoding="utf-8", errors="replace", timeout=10
-                )
-                write_log(f"更新后版本: {(vcheck.stdout or '').strip()}")
-                return
-            else:
-                write_log(f"winget 返回非零退出码: {wr.returncode}")
-        except Exception as e:
-            write_log(f"winget 失败: {e}")
+        # ── winget 已弃用（DEVLOG Bug#4 证明会卡死在协议确认页），直接跳过 ──
+        # 直接走下载安装包的方式
 
-        # ── 方法 2~4：先查最新版本号，再拼带版本号的下载链接（避免代理缓存旧版）──
+        # ── 先查最新版本号，再拼带版本号的下载链接（避免代理缓存旧版）──
+        # 注意：DEVLOG Bug#5 测试 ghproxy.com 和 gh.con.sh 已挂，不再使用
         latest_tag = get_latest_ollama_version()
         if latest_tag:
             # 带版本号的直接链接，代理无法用旧缓存糊弄
             versioned_path = f"download/{latest_tag}/OllamaSetup.exe"
             download_urls = [
-                ("GitHub 代理 ghproxy.com (版本直链)", f"https://ghproxy.com/https://github.com/ollama/ollama/releases/{versioned_path}"),
                 ("GitHub 代理 gh-proxy.com (版本直链)", f"https://gh-proxy.com/https://github.com/ollama/ollama/releases/{versioned_path}"),
+                ("GitHub 代理 ghproxy.net (版本直链)", f"https://ghproxy.net/https://github.com/ollama/ollama/releases/{versioned_path}"),
                 ("GitHub Releases (版本直链)", f"https://github.com/ollama/ollama/releases/{versioned_path}"),
                 ("ollama.com", "https://ollama.com/download/OllamaSetup.exe"),
             ]
@@ -353,8 +336,8 @@ def check_and_update_ollama():
             # 查不到版本号就用 /latest/ 兜底，加时间戳破缓存
             ts = int(time.time())
             download_urls = [
-                ("GitHub 代理 ghproxy.com", f"https://ghproxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
                 ("GitHub 代理 gh-proxy.com", f"https://gh-proxy.com/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
+                ("GitHub 代理 ghproxy.net", f"https://ghproxy.net/https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
                 ("GitHub Releases", f"https://github.com/ollama/ollama/releases/latest/download/OllamaSetup.exe?t={ts}"),
                 ("ollama.com", "https://ollama.com/download/OllamaSetup.exe"),
             ]
@@ -598,8 +581,10 @@ def main():
     try:
         MODELS_DIR.mkdir(exist_ok=True)
         install_deps()
-        check_and_update_ollama()
+        # 先确保 Ollama 路径/服务就绪，再做版本检查
+        # （旧顺序 check_and_update_ollama 先 sc start，ensure_ollama_paths 又 sc stop，冲突）
         ensure_ollama_paths()
+        check_and_update_ollama()
         model_path = download_model()
         create_ollama_model(model_path)
         ok = verify_model()

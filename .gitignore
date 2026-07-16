@@ -8,6 +8,7 @@ __pycache__/
 
 # 日志
 *.log
+OldLogs/
 
 # 备份文件
 *.backup-*
@@ -17,3 +18,12 @@ __pycache__/
 
 # VS Code 用户配置 (含个人路径)
 vscode-settings.json
+
+# 模型文件 (太大)
+models/
+
+# 临时文件
+.flashtap-env.txt
+flashtap-user.txt
+.ollama_latest_version
+.wsl-distro-name

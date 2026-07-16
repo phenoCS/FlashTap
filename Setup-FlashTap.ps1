@@ -5,21 +5,36 @@
 # 严格按用户要求：所有配置来自用户提供的 settings.json / config.yaml / extensions.list
 # 脚本只负责流程编排，不直接写入业务配置代码
 
+param(
+    [string]$OriginalUsername,
+    [string]$OriginalUserProfile
+)
+
+# 如果通过 UAC 提权后用户身份变了（多用户场景），
+# 把环境变量切换回原始用户，保证 VS Code/配置装在正确用户下
+if ($OriginalUsername -and $OriginalUsername -ne $env:USERNAME) {
+    $env:USERNAME = $OriginalUsername
+    $env:USERPROFILE = $OriginalUserProfile
+    $env:LOCALAPPDATA = Join-Path $OriginalUserProfile 'AppData\Local'
+    $env:APPDATA = Join-Path $OriginalUserProfile 'AppData\Roaming'
+    $env:HOMEPATH = "\Users\$OriginalUsername"
+    $env:HOMEDRIVE = ($OriginalUserProfile -split ':')[0] + ':'
+    Write-Host "  [信息] 已切换到目标用户: $OriginalUsername" -ForegroundColor Cyan
+}
+
+# 确保 FLASHTAP_ORIGINAL_* 环境变量已设置（子进程靠这个恢复用户上下文）
+# bat 文件可能已设置，这里做兜底
+if (-not $env:FLASHTAP_ORIGINAL_USER) {
+    $env:FLASHTAP_ORIGINAL_USER = $env:USERNAME
+}
+if (-not $env:FLASHTAP_ORIGINAL_PROFILE) {
+    $env:FLASHTAP_ORIGINAL_PROFILE = $env:USERPROFILE
+}
+Write-Host "  [调试] FLASHTAP_ORIGINAL_USER=$env:FLASHTAP_ORIGINAL_USER, FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE" -ForegroundColor DarkGray
+
 $ErrorActionPreference = 'Continue'
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-# 禁用控制台快速编辑模式，防止鼠标误点导致下载卡死
-Add-Type -Name ConsoleUtil -Namespace Win32 -MemberDefinition @'
-[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int nStdHandle);
-[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
-[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
-'@
-$handle = [Win32.ConsoleUtil]::GetStdHandle(-10)
-$mode = 0
-[Win32.ConsoleUtil]::GetConsoleMode($handle, [ref]$mode) | Out-Null
-$ENABLE_QUICK_EDIT = 0x0040
-[Win32.ConsoleUtil]::SetConsoleMode($handle, $mode -band (-bnot $ENABLE_QUICK_EDIT)) | Out-Null
 
 # 自动继承系统代理设置
 $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
@@ -47,7 +62,7 @@ function Write-Log {
 }
 
 function Run-Script {
-    param([string]$FilePath, [string]$Description)
+    param([string]$FilePath, [string]$Description, [string[]]$ArgumentList = @())
     Write-Host ''
     Write-Host '  ────────────────────────────────────────────' -ForegroundColor Cyan
     Write-Host "    $Description" -ForegroundColor Cyan
@@ -58,8 +73,29 @@ function Run-Script {
         return $false
     }
 
-    $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`"" -Wait -NoNewWindow -PassThru
-    $ec = if ($proc) { $proc.ExitCode } else { 1 }
+    # FLASHTAP_ORIGINAL_* 环境变量在 Start-Process 子进程中不可靠
+    # 改用文件传递，彻底绕过进程继承问题
+    # 必须放脚本目录（%~dp0），不要放 %TEMP%——提权后 TEMP 指向不同用户，读不到！
+    $envFile = Join-Path $PROJECT_DIR '.flashtap-env.txt'
+    $envContent = @"
+FLASHTAP_ORIGINAL_USER=$env:FLASHTAP_ORIGINAL_USER
+FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE
+"@
+    $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
+    Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
+
+    # 直接在本进程内执行子脚本（同窗口，日志直接输出到当前终端）
+    # 这样用户能在一个窗口看到所有日志，不弹新窗口
+    $extraArgs = if ($ArgumentList.Count -gt 0) { ' ' + ($ArgumentList -join ' ') } else { '' }
+    $ec = 0
+    try {
+        # 设置子脚本需要的参数并执行
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "$FilePath"$extraArgs
+        $ec = $LASTEXITCODE
+    } catch {
+        $ec = 1
+        Write-Log "[错误] 执行子脚本异常: $($_.Exception.Message)" 'Red'
+    }
     Write-Log "[信息] 脚本退出码: $ec"
     return ($ec -eq 0)
 }
@@ -307,6 +343,34 @@ Run-Script -FilePath $cppScript -Description 'C++ 编译环境配置（可选，
 $downloadScript = [System.IO.Path]::Combine($PROJECT_DIR, 'download-models.py')
 $downloadOk = Run-Python -FilePath $downloadScript -Description '第三步：部署 Qwen2.5-Coder 7B 代码模型（约 4GB，耗时较长）'
 if (-not $downloadOk) {
+    # Python 不可用时，直接用 ollama pull 兜底
+    Write-Host ''
+    Write-Log '[信息] Python 不可用，使用 ollama pull 直接下载模型...' 'Yellow'
+    $ollamaExeForPull = $null
+    $ollamaPullPaths = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
+        (Join-Path $env:ProgramFiles 'Ollama\ollama.exe'),
+        (Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) 'Ollama\ollama.exe')
+    )
+    foreach ($op in $ollamaPullPaths) {
+        if (Test-Path -LiteralPath $op) { $ollamaExeForPull = $op; break }
+    }
+    if (-not $ollamaExeForPull) { $ollamaExeForPull = 'ollama' }
+
+    try {
+        Write-Log '[信息] 正在执行 ollama pull qwen2.5-coder:7b（约 4GB，需 10-30 分钟）...' 'Cyan'
+        $pullProc = Start-Process -FilePath $ollamaExeForPull -ArgumentList 'pull', 'qwen2.5-coder:7b' -Wait -NoNewWindow -PassThru
+        if ($pullProc -and $pullProc.ExitCode -eq 0) {
+            Write-Log '[成功] 模型下载完成' 'Green'
+            $downloadOk = $true
+        } else {
+            Write-Log '[警告] ollama pull 失败，模型未部署' 'Yellow'
+        }
+    } catch {
+        Write-Log "[警告] ollama pull 异常: $($_.Exception.Message)" 'Yellow'
+    }
+}
+if (-not $downloadOk) {
     Write-Host ''
     Write-Host '  [警告] 模型部署未成功，Continue 插件可能无法使用' -ForegroundColor Yellow
     Write-Host '  [建议] 检查网络连接后重新运行本脚本' -ForegroundColor Yellow
@@ -348,22 +412,63 @@ if (-not $configOk) {
 Write-Host ''
 Write-Log '[信息] 所有安装步骤完成，准备重启 VS Code...' 'Cyan'
 
-# ── 查找 VS Code 可执行文件 ──
+# ── 查找 VS Code 可执行文件（查所有注册表，含系统级 D 盘等非标准位置）──
+# 注意：这里只【查找】用于启动，不重装。install-vscode.ps1 负责安装/复用决策。
 $vscExe = $null
 $vscCandidatePaths = @(
     [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs\Microsoft VS Code\Code.exe'),
+    [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe'),
     [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe'),
-    [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe'),
-    [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe')
+    [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe')
 )
 if ($env:ProgramW6432) {
     $vscCandidatePaths += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
 }
+
+# 查所有注册表（HKCU + HKLM），找到 VS Code 安装路径（含 D 盘等非标准位置）
+$regPaths = @(
+    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+foreach ($regPath in $regPaths) {
+    try {
+        $entries = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
+        foreach ($entry in $entries) {
+            if ($entry.DisplayName -like '*Visual Studio Code*' -and $entry.UninstallString) {
+                $uninstStr = $entry.UninstallString -replace '^"', '' -replace '"$', ''
+                $instDir = Split-Path -Parent $uninstStr
+                $codeExe = Join-Path $instDir 'Code.exe'
+                if ($codeExe -notin $vscCandidatePaths) {
+                    $vscCandidatePaths += $codeExe
+                }
+                Write-Log "[信息] 注册表找到 VS Code: $instDir" 'Cyan'
+            }
+        }
+    } catch {}
+}
+
+# 遍历候选路径，找到可用的 VS Code
+# 不依赖 Get-Item 读取文件大小（VS Code 运行中文件可能被锁），
+# 改用目录存在性 + resources\ 子目录判断
 foreach ($p in $vscCandidatePaths) {
+    $vscDir = Split-Path -Parent $p
     if (Test-Path -LiteralPath $p) {
+        # 优先检查 resources\ 子目录（不依赖 Code.exe 可读）
+        $resourcesDir = Join-Path $vscDir 'resources'
+        if (Test-Path -LiteralPath $resourcesDir) {
+            $vscExe = $p
+            Write-Log "[信息] 使用 VS Code: $p" 'Green'
+            break
+        }
+        # 兜底：尝试 Get-Item（文件未锁定时可用）
         try {
             $item = Get-Item -LiteralPath $p -ErrorAction Stop
-            if ($item.Length -gt 5242880) { $vscExe = $p; break }
+            if ($item.Length -gt 5242880) {
+                $vscExe = $p
+                Write-Log "[信息] 使用 VS Code: $p" 'Green'
+                break
+            }
         } catch {}
     }
 }
@@ -387,13 +492,8 @@ if ($vscExe) {
             if ($distroName) {
                 Write-Log "[信息] 准备 WSL 连接: $distroName" 'Cyan'
 
-                # 提前获取 WSL 用户家目录（避免变量未定义）
-                $wslHome = (& wsl.exe -d $distroName -- bash -c 'echo $HOME' 2>&1).Trim()
-                if (-not $wslHome -or $wslHome -eq '/') {
-                    Write-Log "[警告] 无法获取 WSL 用户家目录，使用默认路径" 'Yellow'
-                    $wslHome = '/home/phenomenon'
-                }
-                $wslWorkspace = "$wslHome/lc-cpp-workspace"
+                # 使用固定工作区路径（与 setup-cpp-env.ps1 保持一致）
+                $wslWorkspace = '/home/lc-cpp-workspace'
                 Write-Log "[信息] 工作区路径: $wslWorkspace" 'Cyan'
 
                 $null = & wsl.exe --terminate $distroName 2>&1
@@ -781,12 +881,15 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
             }
         }
 
-        # 为确保中文界面和 Continue 配置生效，关闭当前用户的所有 VS Code 进程后重新启动
+        # 为确保中文界面和 Continue 配置生效，关闭目标用户的 VS Code 进程后重新启动
+        # 用提权前的原始用户名过滤，避免提权后 $env:USERNAME 变成 Administrator 误杀
+        $targetUserForKill = if ($OriginalUsername) { $OriginalUsername } else { $env:USERNAME }
         if ($existingCode.Count -gt 0) {
-            Write-Log "[信息] 关闭当前用户的 VS Code 进程以应用新配置..." 'Cyan'
-            & taskkill /F /FI "USERNAME eq $env:USERNAME" /IM Code.exe 2>&1 | Out-Null
+            Write-Log "[信息] 关闭目标用户 [$targetUserForKill] 的 VS Code 进程以应用新配置..." 'Cyan'
+            & taskkill /F /FI "USERNAME eq $targetUserForKill" /IM Code.exe 2>&1 | Out-Null
             Start-Sleep 3
         }
+        # 不用 -NoNewWindow，让 VS Code 在独立窗口启动，避免其 stdout 混入安装终端
         Start-Process -FilePath $vscExe -ArgumentList $vscArgs
         Start-Sleep 3
         Write-Log '[成功] VS Code 已启动，中文界面 + Continue 配置已就绪' 'Green'
@@ -795,6 +898,22 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
     }
 } else {
     Write-Log '[警告] 未找到 VS Code，请手动从开始菜单打开' 'Yellow'
+}
+
+# ── 第四步半：环境自检（README 步骤10，非阻塞） ──
+$checkScript = [System.IO.Path]::Combine($PROJECT_DIR, 'check-environment.ps1')
+if (Test-Path -LiteralPath $checkScript) {
+    Write-Host ''
+    Write-Host '  ────────────────────────────────────────────' -ForegroundColor Cyan
+    Write-Host '    环境自检' -ForegroundColor Cyan
+    Write-Host '  ────────────────────────────────────────────' -ForegroundColor Cyan
+    try {
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checkScript
+    } catch {
+        Write-Log "[警告] 环境自检执行异常: $($_.Exception.Message)" 'Yellow'
+    }
+} else {
+    Write-Log '[信息] 未找到 check-environment.ps1，跳过环境自检' 'Cyan'
 }
 
 # ── 第五步：安装完成 ──

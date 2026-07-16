@@ -8,11 +8,7 @@
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'Continue'
 
-# 确保 TLS 1.2 可用（旧版 PowerShell 默认不开启）
-try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
-try { $p = [System.Net.WebRequest]::GetSystemWebProxy(); $p.Credentials = [System.Net.CredentialCache]::DefaultCredentials; [System.Net.WebRequest]::DefaultWebProxy = $p } catch {}
-
-# 获取脚本所在目录（兼容 Invoke-Expression 内存执行模式）
+# 获取脚本所在目录（必须最先执行，后续依赖 PROJECT_DIR）
 $PROJECT_DIR = $null
 try {
     if ($MyInvocation -ne $null -and $MyInvocation.MyCommand -ne $null -and $MyInvocation.MyCommand.Path -ne $null) {
@@ -33,13 +29,38 @@ if ($PROJECT_DIR -eq $null -or $PROJECT_DIR -eq "") {
     exit 1
 }
 
+# 从文件读取目标用户信息（Start-Process 子进程无法可靠继承环境变量）
+# 必须放脚本目录，不要放 %TEMP%——提权后 TEMP 指向不同用户，读不到！
+$envFile = Join-Path $PROJECT_DIR '.flashtap-env.txt'
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        $key, $value = $_ -split '=', 2
+        if ($key -and $value) { Set-Item "env:$key" $value }
+    }
+    $OriginalUserProfile = $env:FLASHTAP_ORIGINAL_PROFILE
+    $OriginalUsername = $env:FLASHTAP_ORIGINAL_USER
+} else {
+    $OriginalUserProfile = $null
+    $OriginalUsername = $null
+}
+
+if ($OriginalUsername -and $OriginalUsername -ne $env:USERNAME) {
+    $env:USERNAME = $OriginalUsername
+    $env:USERPROFILE = $OriginalUserProfile
+    $env:LOCALAPPDATA = Join-Path $OriginalUserProfile 'AppData\Local'
+    $env:APPDATA = Join-Path $OriginalUserProfile 'AppData\Roaming'
+    $env:HOMEPATH = "\Users\$OriginalUsername"
+    $env:HOMEDRIVE = ($OriginalUserProfile -split ':')[0] + ':'
+}
+
+# 确保 TLS 1.2 可用（旧版 PowerShell 默认不开启）
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+try { $p = [System.Net.WebRequest]::GetSystemWebProxy(); $p.Credentials = [System.Net.CredentialCache]::DefaultCredentials; [System.Net.WebRequest]::DefaultWebProxy = $p } catch {}
+
 $LOG_FILE = [System.IO.Path]::Combine($PROJECT_DIR, 'vscode-install.log')
 
 $VSCODE_DOWNLOAD_URLS = @(
-    # 全部使用用户级安装器（VSCodeUserSetup），无需管理员权限即可安装
-    'https://vscode.cdn.azure.cn/stable/f1e16e1e6214d7c44d078b1f0607b23251591115/VSCodeUserSetup-x64-1.90.0.exe',
-    'https://update.code.visualstudio.com/latest/win32-x64-user/stable',
-    'https://az764295.vo.msecnd.net/stable/f1e16e1e6214d7c44d078b1f0607b23251591115/VSCodeUserSetup-x64-1.90.0.exe'
+    'https://update.code.visualstudio.com/latest/win32-x64-user/stable'
 )
 
 function Write-Log {
@@ -69,64 +90,256 @@ function Test-RealVSCode {
     return $true
 }
 
+# 辅助：判断路径是否指向真实存在的 VS Code（即使文件被运行中进程锁定也能判断）
+# 优先用目录存在性 + 同目录下 bin\ 或 resources\ 子目录存在性，不依赖 Code.exe 可读
+function Test-VSCodeInstalled {
+    param([string]$ExePath)
+    if ([string]::IsNullOrEmpty($ExePath)) { return $false }
+    $dir = Split-Path -Parent $ExePath
+    if (-not (Test-Path -LiteralPath $dir)) { return $false }
+    # VS Code 安装目录必有 resources\ 子目录（不依赖 Code.exe 是否被锁定）
+    $resourcesDir = Join-Path $dir 'resources'
+    if (Test-Path -LiteralPath $resourcesDir) { return $true }
+    # 兜底：Code.exe 本身可读且够大
+    return (Test-RealVSCode -Path $ExePath)
+}
+
 function Invoke-RobustDownload {
     param([string]$Url, [string]$OutFile)
-    $maxRetries = 3
-    for ($i = 0; $i -lt $maxRetries; $i++) {
-        try {
-            Write-Log "[信息] 正在下载（第 $($i+1)/$maxRetries 次）: $Url"
-            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
-            $outItem = Get-Item -LiteralPath $OutFile -ErrorAction Stop
-            if ($outItem.Length -gt 10MB) {
-                Write-Log "[信息] 下载完成: $($outItem.Length / 1MB -as [int]) MB"
-                return $true
+
+    Write-Log "[信息] 正在下载 VS Code: $Url"
+
+    # 移除旧文件
+    if (Test-Path $OutFile) { Remove-Item $OutFile -Force }
+
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($Url)
+        $req.Timeout = 30000
+        $req.ReadWriteTimeout = 30000
+        $req.AllowAutoRedirect = $true
+        $resp = $req.GetResponse()
+        $totalBytes = $resp.ContentLength
+        $respStream = $resp.GetResponseStream()
+        $fs = [System.IO.File]::Create($OutFile)
+        $buffer = New-Object byte[] 65536
+        $downloaded = 0L
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $totalSw = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastRead = Get-Date
+
+        while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $fs.Write($buffer, 0, $read)
+            $downloaded += $read
+            $lastRead = Get-Date
+            if ($sw.ElapsedMilliseconds -ge 200) {
+                $pct = if ($totalBytes -gt 0) { [math]::Round($downloaded * 100 / $totalBytes) } else { 0 }
+                $speed = if ($totalSw.Elapsed.TotalSeconds -gt 0) { [math]::Round($downloaded / 1MB / $totalSw.Elapsed.TotalSeconds, 1) } else { 0 }
+                $barLen = 30
+                $filled = [math]::Max(0, [math]::Round($pct * $barLen / 100))
+                $empty = $barLen - $filled
+                $bar = '[' + ('#' * $filled) + ('-' * $empty) + ']'
+                $downMB = [math]::Round($downloaded / 1MB, 1)
+                $totalMB = if ($totalBytes -gt 0) { [math]::Round($totalBytes / 1MB, 1) } else { '?' }
+                $eta = if ($speed -gt 0 -and $totalBytes -gt 0) {
+                    [math]::Round(($totalBytes - $downloaded) / 1MB / $speed / 60, 1)
+                } else { '?' }
+                Write-Host "`r  $bar $pct%  $downMB/$totalMB MB  ${speed}MB/s  剩余${eta}min  " -NoNewline
+                $sw.Restart()
             }
-            Write-Log "[警告] 下载文件异常（$($outItem.Length) 字节），重试" 'WARNING'
-            if (Test-Path $OutFile) { Remove-Item $OutFile -Force }
-        } catch {
-            Write-Log "[警告] 下载失败: $($_.Exception.Message)，重试" 'WARNING'
-            Start-Sleep -Seconds 3
+            if (((Get-Date) - $lastRead).TotalSeconds -gt 60) {
+                throw '下载卡死，60秒无数据'
+            }
         }
+        $fs.Close()
+        $respStream.Close()
+        $resp.Close()
+        Write-Host ''
+
+        $outItem = Get-Item -LiteralPath $OutFile -ErrorAction Stop
+        if ($outItem.Length -gt 10MB) {
+            Write-Log "[信息] 下载完成: $([math]::Round($outItem.Length / 1MB, 0)) MB"
+            return $true
+        }
+        Write-Log "[警告] 下载文件异常（$($outItem.Length) 字节）"
+        if (Test-Path $OutFile) { Remove-Item $OutFile -Force }
+        return $false
+    } catch {
+        Write-Host ''
+        Write-Log "[警告] 下载失败: $($_.Exception.Message)"
+        if (Test-Path $OutFile) { Remove-Item $OutFile -Force }
+        return $false
     }
-    Write-Log "[错误] 所有下载尝试均失败" 'ERROR'
-    return $false
 }
 
 function Install-VSCode {
-    Write-Log '[信息] 检查是否已有 VS Code...'
+    Write-Log '[信息] 检查是否已有可用的 VS Code（优先用户级，其次系统级只复用）...'
 
-    $vscCandidates = @(
+    # 候选路径：先用户级，再系统级
+    # 注意：系统级 VS Code（如 D:\Microsoft VS Code）只【复用】不【重装】，
+    # 避免与正在运行的 VS Code 进程冲突导致安装失败（退出码 5）
+    $userCandidates = @(
         [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs\Microsoft VS Code\Code.exe'),
-        [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe'),
-        [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe'),
         [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe')
     )
+    $systemCandidates = @(
+        [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe'),
+        [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe')
+    )
     if ($env:ProgramW6432) {
-        $vscCandidates += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
+        $systemCandidates += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
     }
 
-    foreach ($cand in $vscCandidates) {
-        if (Test-RealVSCode -Path $cand) {
-            Write-Log "[信息] 找到 VS Code: $cand"
-            $binDir = Split-Path -Parent $cand
-            $cmdPath = [System.IO.Path]::Combine($binDir, 'bin\code.cmd')
-            if (-not (Test-Path $cmdPath)) {
-                $cmdPath = [System.IO.Path]::Combine($binDir, 'code.cmd')
+    # 注册表查找：先 HKCU（用户级），再 HKLM（系统级）
+    $regRoots = @(
+        @{Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'user'},
+        @{Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'system'},
+        @{Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'system'}
+    )
+    foreach ($regRoot in $regRoots) {
+        try {
+            $entries = Get-ItemProperty -Path $regRoot.Path -ErrorAction SilentlyContinue
+            foreach ($entry in $entries) {
+                if ($entry.DisplayName -like '*Visual Studio Code*' -and $entry.UninstallString) {
+                    $uninstStr = $entry.UninstallString -replace '^"', '' -replace '"$', ''
+                    $instDir = Split-Path -Parent $uninstStr
+                    $codeExe = Join-Path $instDir 'Code.exe'
+                    if ($regRoot.Scope -eq 'user' -and $codeExe.StartsWith($env:USERPROFILE, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        if ($codeExe -notin $userCandidates) { $userCandidates += $codeExe }
+                        Write-Log "[信息] 用户级注册表找到: $instDir"
+                    } elseif ($regRoot.Scope -eq 'system') {
+                        if ($codeExe -notin $systemCandidates) { $systemCandidates += $codeExe }
+                        Write-Log "[信息] 系统级注册表找到: $instDir（将复用，不重装）"
+                    }
+                }
             }
-            if (Test-Path $cmdPath) {
-                Write-Log "[信息] 找到 code.cmd: $cmdPath"
-                return $cmdPath
-            }
-            return $cand
+        } catch {}
+    }
+
+    # 辅助：从候选路径提取 code.cmd
+    $getCmdPath = {
+        param([string]$exePath)
+        $binDir = Split-Path -Parent $exePath
+        $cmdPath = [System.IO.Path]::Combine($binDir, 'bin\code.cmd')
+        if (-not (Test-Path $cmdPath)) {
+            $cmdPath = [System.IO.Path]::Combine($binDir, 'code.cmd')
+        }
+        if (Test-Path $cmdPath) { return $cmdPath }
+        return $exePath
+    }
+
+    # 优先级 1：用户级 VS Code（直接复用）
+    foreach ($cand in $userCandidates) {
+        if (Test-VSCodeInstalled -ExePath $cand) {
+            Write-Log "[信息] 复用用户级 VS Code: $cand"
+            return & $getCmdPath $cand
         }
     }
 
-    Write-Log '[信息] 未找到 VS Code，开始下载安装...'
+    # 优先级 2：系统级 VS Code（只复用，不重装 —— 避免与运行中进程冲突导致退出码 5）
+    foreach ($cand in $systemCandidates) {
+        if (Test-VSCodeInstalled -ExePath $cand) {
+            Write-Log "[信息] 复用系统级 VS Code: $cand（不重装，直接配置扩展）"
+            return & $getCmdPath $cand
+        }
+    }
+
+    # ── 致命安全锁：如果注册表里有任何 VS Code 记录，但上面没复用到（可能 Code.exe 被锁），
+    # 绝不重装！重装会损坏正在运行的 VS Code。改为直接用注册表里的路径返回 code.cmd。
+    if ($systemCandidates.Count -gt 0 -or $userCandidates.Count -gt 0) {
+        # 取第一个候选路径（即使 Code.exe 读不了，code.cmd 可能可用）
+        $allCandidates = @($userCandidates) + @($systemCandidates)
+        foreach ($cand in $allCandidates) {
+            $binDir = Split-Path -Parent $cand
+            $cmdPath = Join-Path $binDir 'bin\code.cmd'
+            if (Test-Path -LiteralPath $cmdPath) {
+                Write-Log "[信息] VS Code 正在运行（文件锁定），复用 code.cmd: $cmdPath"
+                return $cmdPath
+            }
+        }
+        # 连 code.cmd 都没有，用 Code.exe 路径（扩展安装会通过 Code.exe --install-extension）
+        if ($allCandidates.Count -gt 0) {
+            Write-Log "[信息] VS Code 已安装（注册表确认），复用: $($allCandidates[0])"
+            return $allCandidates[0]
+        }
+    }
+
+    Write-Log '[信息] 目标用户无 VS Code，开始下载安装...'
+
+    # ── 最终安全锁：再次全注册表扫描，只要有任何 VS Code 就绝不安装 ──
+    # 防止因 Code.exe 被锁定导致前面漏判，从而损坏已安装的 VS Code
+    $anyVSCodeFound = $false
+    $finalCheckRegRoots = @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    foreach ($regRoot in $finalCheckRegRoots) {
+        try {
+            $entries = Get-ItemProperty -Path $regRoot -ErrorAction SilentlyContinue
+            foreach ($entry in $entries) {
+                if ($entry.DisplayName -like '*Visual Studio Code*') {
+                    $anyVSCodeFound = $true
+                    Write-Log "[警告] 最终安全锁：注册表发现已安装的 VS Code（$($entry.DisplayName)），中止安装以防损坏" 'Yellow'
+                    # 直接复用，不安装
+                    $uninstStr = $entry.UninstallString -replace '^"', '' -replace '"$', ''
+                    if ($uninstStr) {
+                        $instDir = Split-Path -Parent $uninstStr
+                        $codeExe = Join-Path $instDir 'Code.exe'
+                        $cmdPath = Join-Path $instDir 'bin\code.cmd'
+                        if (Test-Path -LiteralPath $cmdPath) { return $cmdPath }
+                        if (Test-Path -LiteralPath $codeExe) { return $codeExe }
+                    }
+                    break
+                }
+            }
+        } catch {}
+        if ($anyVSCodeFound) { break }
+    }
+    if ($anyVSCodeFound) {
+        # 注册表有但找不到可执行文件，说明 VS Code 损坏，但不能由 FlashTap 重装（用户自己处理）
+        Write-Log '[错误] 检测到 VS Code 已安装但可执行文件缺失，请用户手动重装 VS Code，FlashTap 不会自动重装' 'Red'
+        throw '检测到已安装的 VS Code 但可执行文件缺失，为安全起见中止安装，请手动处理 VS Code 后重试'
+    }
 
     $installerPath = [System.IO.Path]::Combine($env:TEMP, 'VSCodeUserSetup-x64-latest.exe')
+
+    # ── 强制清理：删除可能损坏的旧安装器和残留（之前失败安装留下的）──
+    # 这些残留会导致新的安装器解压出损坏的 dll 报错
+    try {
+        Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue
+        # 清理 VS Code 安装日志
+        Remove-Item -LiteralPath (Join-Path $env:TEMP 'vscode-install-log.log') -Force -ErrorAction SilentlyContinue
+    } catch {}
+
+    # 校验已有安装器是否完整（VS Code 安装器约 90MB+）
+    $installerValid = $false
     if (Test-Path $installerPath) {
-        Write-Log '[信息] 安装器已存在，跳过下载'
-    } else {
+        $item = Get-Item -LiteralPath $installerPath -ErrorAction SilentlyContinue
+        if ($item -and $item.Length -gt 80MB) {
+            # PE 文件头校验
+            try {
+                $bytes = New-Object byte[] 2
+                $fs = [System.IO.File]::OpenRead($installerPath)
+                $read = $fs.Read($bytes, 0, 2)
+                $fs.Close()
+                if ($read -eq 2 -and $bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A) {
+                    $installerValid = $true
+                    Write-Log "[信息] 安装器已存在且有效 ($([math]::Round($item.Length / 1MB, 0)) MB)，跳过下载"
+                } else {
+                    Write-Log '[警告] 安装器 PE 头校验失败，删除残骸重新下载'
+                }
+            } catch {
+                Write-Log '[警告] 安装器校验出错，删除残骸重新下载'
+            }
+        } else {
+            Write-Log "[警告] 安装器文件不完整 ($(if ($item) { $item.Length } else { 0 }) 字节)，删除残骸重新下载"
+        }
+        if (-not $installerValid) {
+            Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not $installerValid) {
         $ok = $false
         foreach ($url in $VSCODE_DOWNLOAD_URLS) {
             if (Invoke-RobustDownload -Url $url -OutFile $installerPath) {
@@ -140,12 +353,21 @@ function Install-VSCode {
     }
 
     Write-Log '[信息] 正在静默安装 VS Code（最长等待 10 分钟）...'
-    Write-Log '[信息] 安装器路径: ' + $installerPath
+    Write-Log "[信息] 安装器路径: $installerPath"
 
-    # very silent + no restart + don't run after install
+    # 安装前检查是否有 VS Code 进程在运行
+    # 注意：走到这里说明注册表里没有 VS Code，如果有 Code 进程说明状态异常
+    # 此时绝不杀进程（可能属于其他用户/其他用途），只警告
+    $codeList = @(Get-Process -Name 'Code' -ErrorAction SilentlyContinue)
+    if ($codeList.Count -gt 0) {
+        Write-Log "[警告] 检测到 $($codeList.Count) 个 VS Code 进程在运行，但注册表无 VS Code 记录" 'Yellow'
+        Write-Log '[信息] 不杀进程（可能属于其他用户/其他用途），安装器自带 /closeapplications 会处理冲突' 'Yellow'
+    }
+
+    # very silent + no restart + don't run after install + close applications
     $installLog = [System.IO.Path]::Combine($env:TEMP, 'vscode-install-log.log')
     try {
-        $process = Start-Process -FilePath $installerPath -ArgumentList '/verysilent', '/norestart', '/mergetasks=!runcode', "/LOG=`"$installLog`"" -PassThru
+        $process = Start-Process -FilePath $installerPath -ArgumentList '/verysilent', '/norestart', '/mergetasks=!runcode', '/closeapplications', "/LOG=`"$installLog`"" -PassThru
         $finished = $process.WaitForExit(600000)
         if (-not $finished) {
             Write-Log '[错误] VS Code 安装超时，强制终止'
@@ -159,17 +381,15 @@ function Install-VSCode {
     }
 
     if ($ec -ne 0) {
-        Write-Log "[警告] VS Code 安装退出码: $ec" 'WARNING'
+        Write-Log "[错误] VS Code 安装失败，退出码: $ec" 'ERROR'
         if (Test-Path $installLog) {
             $logContent = Get-Content $installLog -Raw -ErrorAction SilentlyContinue
             if ($logContent -match '.*Error.*|failed|aborted') {
                 Write-Log "[错误] 安装日志包含错误信息:" 'ERROR'
                 Write-Log $logContent 'ERROR'
             }
-        } else {
-            Write-Log '[错误] 未生成安装日志，安装器可能未正常启动' 'ERROR'
         }
-        throw 'VS Code 安装失败，安装器未正常启动，请检查安装包是否完整'
+        throw "VS Code 安装失败（错误 $ec）"
     }
 
     Write-Log '[成功] VS Code 安装完成'
@@ -321,51 +541,12 @@ function Install-All-Extensions {
     return ($failCount -eq 0)
 }
 
-# 1b. 扩展清理：卸载所有不在白名单中的扩展
+# 1b. 扩展清理：已禁用
+# 原实现会卸载用户已有的全部非白名单扩展（CodeGeeX/Copilot/FittenCode 等），
+# 对在用 VS Code 做开发的用户是灾难性破坏。FlashTap 只应【新增】自己需要的扩展，
+# 绝不应该删除用户已有的任何扩展。如需清理，由用户自己在 VS Code 内手动操作。
 function Remove-NonWhitelistExtensions {
-    param([string]$VSCodeCmd = 'code')
-
-    # 确保通过 code.cmd 执行（CLI 模式，不弹出 VS Code 窗口）
-    $cliCmd = $VSCodeCmd
-    if ($cliCmd -match '\\Code\.exe$') {
-        $parentDir = Split-Path -Parent $cliCmd
-        $candidate = Join-Path $parentDir 'bin\code.cmd'
-        if (-not (Test-Path $candidate)) {
-            $candidate = Join-Path $parentDir 'code.cmd'
-        }
-        if (Test-Path $candidate) {
-            $cliCmd = $candidate
-        }
-    }
-
-    try {
-        $installed = & $cliCmd --list-extensions 2>&1
-    } catch {
-        return
-    }
-    if (-not $installed) { return }
-
-    $extRoot = [System.IO.Path]::Combine($env:USERPROFILE, '.vscode', 'extensions')
-    $removedCount = 0
-    foreach ($ext in $installed) {
-        $extId = $ext.Trim()
-        if ($extId -eq '' -or $extId -in $EXTENSION_WHITELIST) { continue }
-
-        try {
-            & $cliCmd --uninstall-extension $extId --force 2>&1 | Out-Null
-            Start-Sleep -Seconds 1
-        } catch { }
-
-        # 不依赖退出码，通过检查扩展目录是否消失来判定卸载成功
-        if (-not (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $extRoot)) {
-            Write-Log "  [已卸载] $extId" 'INFO'
-            $removedCount++
-        }
-    }
-
-    if ($removedCount -gt 0) {
-        Write-Log "[信息] 已清理 $removedCount 个非白名单扩展"
-    }
+    Write-Log '[信息] 扩展清理已禁用（保护用户已有扩展不被误删）' 'INFO'
 }
 
 # 2. 原封不动复制 settings.json 到 VS Code 用户配置

@@ -85,43 +85,7 @@
 "C_Cpp.default.cppStandard": "c++17",
 "C_Cpp.default.cStandard": "c11",
 "C_Cpp.default.intelliSenseMode": "gcc-x64",
-"openclaw.chat.dimension": "1x1",
 "remote.autoForwardPortsSource": "hybrid",
 "editor.mouseWheelZoom": true,
-"github.copilot.chat.agent.currentEditorContext.enabled": false,
-"github.copilot.enable": {
-    "*": false,
-    "plaintext": false,
-    "markdown": false,
-    "scminput": false,
-    "cpp": false
-},
-"Codegeex.License": "",
-"Codegeex.Local": {
-    "apiURL": "http://10.16.67.83:1234/v1/chat/completions",
-    "useChatGLM": true,
-    "chatGLM": {
-        "apiKey": "",
-        "model": ""
-    },
-    "chat": {
-        "useDefaultSystemPrompt": false,
-        "systemPrompt": "你是资深标准C++工程师，严格遵循C++11规范。\n1、绝不自定义不存在的变量、函数、头文件、标准库；\n2、补充代码只沿用文件内已定义的标识符，缺变量就提醒，不凭空生成；\n3、输出代码必须能直接编译，附带简短注释；\n4、如果代码缺少前置定义，主动标注报错位置，不强行补错代码。",
-        "temperature": 0.1,
-        "top_p": 0.3,
-        "max_tokens": 1024,
-        "presence_penalty": 1
-    },
-    "completions": {
-        "useDefaultSystemPrompt": true,
-        "systemPrompt": "",
-        "temperature": 0.2,
-        "top_p": 0.95,
-        "max_tokens": 64,
-        "presence_penalty": 1
-    }
-},
-"fittencode.languagePreference.displayPreference": "zh-cn",
-"fittencode.languagePreference.commentPreference": "zh-cn",
 "chat.viewSessions.orientation": "stacked"
 }

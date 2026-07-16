@@ -45,21 +45,19 @@ function Check-Ollama {
         Write-Host "    建议：ollama serve 可能未启动" -ForegroundColor Yellow
     }
 
-    # netstat 不需要管理员权限即可检查端口（PID=0 特殊处理）
+    # 检查端口 11434 是否在监听（用 Get-NetTCPConnection，比 netstat 更可靠）
     try {
-        $netstat = & cmd.exe /c 'netstat -ano 2>&1' 2>&1
-        # 取最后2列：本地地址:端口 和 PID；跳过 PID=0 的行（非活跃监听）
-        $found11434 = $false
-        foreach ($line in ($netstat -split '\r?\n')) {
-            if ($line -match ':11434\s+\S+\s+\S+\s+(\d+)$') {
-                $pid = [int]$matches[1]
-                if ($pid -gt 0) { $found11434 = $true; break }
-            }
-        }
-        if ($found11434) {
+        $portConn = Get-NetTCPConnection -LocalPort 11434 -ErrorAction SilentlyContinue
+        if ($portConn) {
             Write-Status "端口 11434" "[OK] 监听中" "Green"
         } else {
-            Write-Status "端口 11434" "[WARN] 未监听" "Yellow"
+            # 兜底：用 Test-NetConnection（慢但兼容性好）
+            $tcpTest = Test-NetConnection -ComputerName '127.0.0.1' -Port 11434 -WarningAction SilentlyContinue
+            if ($tcpTest.TcpTestSucceeded) {
+                Write-Status "端口 11434" "[OK] 监听中" "Green"
+            } else {
+                Write-Status "端口 11434" "[WARN] 未监听" "Yellow"
+            }
         }
     } catch {
         Write-Status "端口 11434" "[WARN] 检查失败" "Yellow"
@@ -71,7 +69,12 @@ function Check-Models {
     Write-Host "检查 Ollama 模型..." -ForegroundColor Cyan
 
     try {
-        $job = Start-Job -ScriptBlock { ollama list 2>&1 }
+        # 直接在当前会话调用 ollama（Start-Job 不继承刚刷新的 PATH，会找不到命令）
+        $job = Start-Job -ScriptBlock {
+            param($envPath)
+            $env:Path = $envPath
+            ollama list 2>&1
+        } -ArgumentList $env:Path
         if (Wait-Job -Job $job -Timeout 10) {
             $output = Receive-Job -Job $job | Out-String
             if ($output -match "qwen2.5-coder:7b") {
@@ -241,7 +244,9 @@ function Check-ContinueConfig {
         $configPath = [System.IO.Path]::Combine($env:USERPROFILE, '.continue\config.yaml')
         if (Test-Path -LiteralPath $configPath) {
             $content = Get-Content -LiteralPath $configPath -Raw
-            if ($content -match 'qwen2.5-coder') {
+            # Continue 配置改为 AUTODETECT 格式（项目状态问题A修复后），
+            # 检查 AUTODETECT + ollama 即可，不再检查 qwen2.5-coder 显式模型名
+            if ($content -match 'AUTODETECT' -and $content -match 'ollama') {
                 Write-Status "config.yaml" "[OK] 已配置" "Green"
             } else {
                 Write-Status "config.yaml" "[!!] 配置不完整" "Yellow"
