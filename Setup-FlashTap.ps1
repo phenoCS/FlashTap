@@ -291,10 +291,102 @@ Write-Host '      FlashTap · AI 编程助手 一键安装工具' -ForegroundCol
 Write-Host '════════════════════════════════════════════════════════' -ForegroundColor Cyan
 Write-Host ''
 Write-Host '  [信息] 本工具将自动完成以下步骤：           ' -ForegroundColor White
+Write-Host '         0. Python 运行环境（如未安装则自动装）  ' -ForegroundColor White
 Write-Host '         1. Ollama 本地大模型引擎               ' -ForegroundColor White
 Write-Host '         2. VS Code 编辑器 + Continue AI 编程插件  ' -ForegroundColor White
 Write-Host '         3. Qwen2.5-Coder 7B 代码模型          ' -ForegroundColor White
 Write-Host '         4. 全自动配置，无需任何手动操作          ' -ForegroundColor White
+Write-Host ''
+
+# ── 第零步：确保 Python 可用（如未安装则自动下载安装） ──
+Write-Host '  ────────────────────────────────────────────' -ForegroundColor Cyan
+Write-Host '    第零步：检测 Python 运行环境' -ForegroundColor Cyan
+Write-Host '  ────────────────────────────────────────────' -ForegroundColor Cyan
+
+$pyInfo = Find-PythonExecutable
+if (-not $pyInfo) {
+    Write-Log '[信息] 未检测到 Python，开始自动下载安装...' 'Yellow'
+
+    $pyInstaller = Join-Path $env:TEMP 'python-3.12.7-amd64.exe'
+
+    # 官方源 + 华为镜像兜底
+    $pyUrls = @(
+        'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe',
+        'https://mirrors.huaweicloud.com/python/3.12.7/python-3.12.7-amd64.exe'
+    )
+
+    $pyDownloaded = $false
+    foreach ($url in $pyUrls) {
+        Write-Log "[信息] 正在下载 Python 3.12.7: $url"
+        try {
+            $req = [System.Net.HttpWebRequest]::Create($url)
+            $req.Timeout = 30000
+            $req.ReadWriteTimeout = 60000
+            $resp = $req.GetResponse()
+            $totalBytes = $resp.ContentLength
+            $respStream = $resp.GetResponseStream()
+            $fs = [System.IO.File]::Create($pyInstaller)
+            $buffer = New-Object byte[] 65536
+            $downloaded = 0L
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while (($read = $respStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $fs.Write($buffer, 0, $read)
+                $downloaded += $read
+                if ($sw.ElapsedMilliseconds -ge 500 -and $totalBytes -gt 0) {
+                    $pct = [math]::Round($downloaded * 100 / $totalBytes)
+                    Write-Host "`r  下载进度: $pct% ($([math]::Round($downloaded/1MB,0))MB / $([math]::Round($totalBytes/1MB,0))MB)   " -NoNewline
+                    $sw.Restart()
+                }
+            }
+            $fs.Close()
+            $respStream.Close()
+            $resp.Close()
+            Write-Host ''
+
+            if ((Test-Path $pyInstaller) -and (Get-Item $pyInstaller).Length -gt 20MB) {
+                Write-Log '[信息] Python 安装包下载完成'
+                $pyDownloaded = $true
+                break
+            }
+        } catch {
+            Write-Host ''
+            Write-Log "[警告] 下载失败: $($_.Exception.Message)"
+            Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($pyDownloaded) {
+        Write-Log '[信息] 正在静默安装 Python（为所有用户，自动加入 PATH）...'
+        try {
+            $pyProc = Start-Process -FilePath $pyInstaller -ArgumentList '/quiet', 'InstallAllUsers=1', 'PrependPath=1', 'Include_test=0' -Wait -PassThru
+            if ($pyProc.ExitCode -eq 0) {
+                Write-Log '[成功] Python 安装完成' 'Green'
+
+                # 刷新当前进程 PATH（安装器写入了注册表但当前进程 PATH 未更新）
+                $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+
+                # 重新检测
+                $pyInfo = Find-PythonExecutable
+                if ($pyInfo) {
+                    Write-Log "[成功] Python 已就绪: $($pyInfo.Exe)" 'Green'
+                } else {
+                    Write-Log '[警告] Python 安装完成但未能检测到，后续 Python 脚本可能无法运行' 'Yellow'
+                }
+            } else {
+                Write-Log "[警告] Python 安装返回非零退出码: $($pyProc.ExitCode)" 'Yellow'
+            }
+        } catch {
+            Write-Log "[警告] Python 安装异常: $($_.Exception.Message)" 'Yellow'
+        }
+        # 清理安装包
+        Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Log '[警告] Python 下载失败，后续需要 Python 的步骤将跳过' 'Yellow'
+        Write-Log '[信息] 请手动安装 Python 3.10+: https://www.python.org/downloads/' 'Yellow'
+    }
+} else {
+    Write-Log "[成功] Python 已就绪: $($pyInfo.Exe) ($($pyInfo.Type))" 'Green'
+}
 Write-Host ''
 
 # ── 第一步：安装 Ollama ──
