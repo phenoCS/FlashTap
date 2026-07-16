@@ -1,15 +1,13 @@
 # FlashTap — 本地 AI 编程助手 一键安装
 
-适配：**RTX 5060 8GB 显存笔记本** | 支持：**Windows 10 / Windows 11** | 网络：**纯国内源**
+适配：**RTX 5060 8GB 显存笔记本** | 支持：**Windows 10 / Windows 11** | 全自动安装，无需任何手动操作
 
 ---
 
-## 📦 安装前准备（用户只需这一步）
+## 📦 安装前准备（零门槛）
 
-1. ✅ **确认硬件**：你的电脑必须有 **RTX 5060 8GB** 显存显卡
-2. ✅ **安装 Python 3.10+**：  
-   下载地址：https://www.python.org/downloads/  
-   **⚠️ 关键：安装时一定要勾选 "Add Python to PATH"**
+1. ✅ **确认硬件**：你的电脑必须有 **NVIDIA 显卡（8GB+ 显存）**
+2. ✅ **不需要**：不需要提前装 Python、不需要装 VS Code、不需要装 Ollama，脚本全部自动搞定
 
 ---
 
@@ -17,8 +15,8 @@
 
 1. 把整个 FlashTap 文件夹解压到你想要安装的位置（比如 `D:\FlashTap\`）
 2. 找到文件 **`一键安装FlashTap.bat`**
-3. **右键点击 → 选择【以管理员身份运行】**
-4. 等待约 10 分钟，全程自动完成，不用管
+3. **直接双击运行**（脚本会自动请求管理员权限，不需要手动右键）
+4. 等待约 15-30 分钟，全程自动完成，不用管
 
 ---
 
@@ -26,13 +24,17 @@
 
 | 文件名 | 说明 |
 |--------|------|
-| `一键安装FlashTap.bat` | 启动入口，用户双击（右键管理员）这个 |
-| `Setup-FlashTap.ps1` | 主控制脚本，按顺序执行安装 |
-| `install-flashtap.ps1` | 子脚本：安装 Ollama + 配置显存限制 6GB |
-| `download-models.py` | 子脚本：从魔搭下载模型 |
-| `install-vscode.ps1` | 子脚本：静默安装 VS Code + Continue 扩展 |
-| `configure-continue.py` | 子脚本：配置 Continue 对接本地 Ollama |
-| `check-environment.ps1` | 子脚本：安装后环境自检 |
+| `一键安装FlashTap.bat` | 启动入口，双击即可，自动提权 |
+| `Setup-FlashTap.ps1` | 主控制脚本，按顺序执行安装（含 Python 自动安装） |
+| `install-flashtap.ps1` | Ollama 安装 + 网络多镜像下载 + 配置 |
+| `install-vscode.ps1` | VS Code 静默安装 + 扩展 + 配置文件复制 |
+| `download-models.py` | 模型下载部署 |
+| `configure-continue.py` | Continue 插件配置 |
+| `setup-cpp-env.ps1` | C++ 编译环境配置（可选） |
+| `check-environment.ps1` | 安装后环境自检 |
+| `settings.json` | VS Code 用户配置 |
+| `config.yaml` / `config.json` / `config.ts` | Continue 插件配置 |
+| `extensions.list` | 扩展白名单 |
 
 ---
 
@@ -40,16 +42,15 @@
 
 | 步骤 | 内容 |
 |------|------|
-| 1️⃣ | 检测管理员权限 |
-| 2️⃣ | 解锁所有文件，清除 Windows 网络锁定标记 |
-| 3️⃣ | 静默安装 Ollama，配置 `OLLAMA_MAX_VRAM=6144` 显存限制 |
-| 4️⃣ | 重启 Ollama 服务 |
-| 5️⃣ | 从阿里魔搭下载 Qwen2.5-Coder-7B-Instruct-Q4_K_M 模型 |
-| 6️⃣ | 导入模型到 Ollama |
-| 7️⃣ | 静默安装 VS Code，关闭遥测和同步 |
-| 8️⃣ | 自动安装 Continue 扩展 |
-| 9️⃣ | 写入 Continue 配置，对接本地 Ollama |
-| 🔟 | 环境自检，输出检测结果 |
+| 0️⃣ | 自动检测并安装 Python 3.12（如未安装） |
+| 1️⃣ | 自动下载并静默安装 Ollama（多镜像源，约 1.4GB） |
+| 2️⃣ | 配置显存限制 `OLLAMA_MAX_VRAM=6144` |
+| 3️⃣ | 自动下载并静默安装 VS Code（用户级安装） |
+| 4️⃣ | 安装 Continue + WSL + 中文语言包 + Code Runner 扩展 |
+| 5️⃣ | 复制 settings.json 和 Continue 配置文件 |
+| 6️⃣ | 下载 Qwen2.5-Coder 7B 代码模型（约 4GB） |
+| 7️⃣ | 启动 Ollama 服务，验证模型可用 |
+| 8️⃣ | 环境自检，输出检测结果 |
 
 ---
 
@@ -67,87 +68,67 @@
 
 ### Q1: 一闪就没了（闪退）
 
-**原因**：
-- 不是用"以管理员身份运行"
-- 缺少 Python 或没勾 Add to PATH
-- 换行符错误（打包时已修复）
+**原因**：脚本运行异常，查看日志定位问题
 
 **解决**：
-1. 必须右键 → 以管理员身份运行 `一键安装FlashTap.bat`
-2. 确认 Python 已安装，且在安装时勾选了 "Add Python to PATH"
-3. 如果还是不行，打开 `cmd`，输入 `python --version`，看能不能输出版本号，不能就是没加 PATH
+1. 确保直接双击运行，不要右键管理员（脚本会自动提权）
+2. 查看 `install.log` 和 `vscode-install.log` 日志文件，看最后几行的错误信息
+3. 如果提示下载失败，检查网络连接
 
 ---
 
-### Q2: 报错 "意外的标记 `}`" 或 "Try 语句缺少自己的 Catch"
+### Q2: Ollama 下载太慢或失败
 
-**原因**：打包时换行符不对
+**原因**：GitHub 在国内不稳定
 
-**解决**：用本文档顶部给你的方法已经修复了。如果重新打包，记住所有 `.ps1` 文件必须是 **CRLF** 换行符，不是 LF。
+**解决**：
+- 脚本已内置 6 个镜像源，会自动切换尝试
+- 也可以提前下载 `OllamaSetup.exe`（约 1.4GB），放在脚本同目录即可跳过下载
+- 下载地址：https://ollama.com/download/OllamaSetup.exe
 
 ---
 
-### Q3: 模型下载很慢
+### Q3: 模型下载慢
 
 **原因**：网络问题
 
-**说明**：脚本自动用魔搭国内源，比 HuggingFace 快很多。如果还是慢，请检查网络连接，脚本支持断点续传，断开再开就能继续。
+**说明**：脚本自动使用国内源，支持断点续传。如果中断，重新运行即可继续下载。
 
 ---
 
-### Q4: Ollama 安装完了，但说找不到 `ollama` 命令
+### Q4: VS Code 安装失败（退出码 5）
 
-**原因**：环境变量没更新
+**原因**：VS Code 正在运行，文件被锁定
 
-**解决**：这是正常现象，安装完 Ollama 后 PATH 需要重启终端才会更新，脚本已经处理了，不用管。
+**解决**：关闭所有 VS Code 窗口后重新运行脚本
 
 ---
 
-### Q5: VS Code 安装完了，Continue 扩展没装上
+### Q5: 显存溢出报错
 
-**原因**：`code` 命令不在 PATH
+**原因**：显卡显存不足
 
-**解决**：重启 VS Code，或者手动在扩展商店搜索 `Continue` 安装一次。
+**解决**：
+- 本项目需要 8GB+ 显存
+- 确认 `OLLAMA_MAX_VRAM` 环境变量已设置为 `6144`
 
 ---
 
 ### Q6: 提示 "磁盘空间不足"
 
-**原因**：模型 + Ollama + VS Code 大约需要 15GB 空间
+**原因**：模型 + Ollama + VS Code 大约需要 20GB 空间
 
-**解决**：换个空间够的磁盘放 FlashTap 文件夹。
-
----
-
-### Q7: 显存溢出报错
-
-**原因**：你的显卡显存小于 8GB，或者 Ollama 显存限制没生效
-
-**解决**：
-- 本项目只适配 **RTX 5060 8GB**，更小显存跑不了
-- 如果确实是 8GB 还溢出，请确认 `OLLAMA_MAX_VRAM` 环境变量已设置为 `6144`
-
----
-
-### Q8: Ollama 下载太慢（1-2 小时）
-
-**原因**：Ollama 安装包约 1.4GB，从 GitHub 下载，国内网络较慢
-
-**解决**：
-- 这是正常现象，首次安装需要耐心等待，后续不会再下载
-- 如果有国际网络加速，建议开启后再安装
-- 也可以提前下载 `OllamaSetup.exe`（约 1.4GB），放在脚本同目录，脚本会自动跳过下载
-- 下载地址：https://ollama.com/download/OllamaSetup.exe
+**解决**：换个空间够的磁盘放 FlashTap 文件夹
 
 ---
 
 ## 🔧 技术细节
 
-- 模型：Qwen2.5-Coder-7B-Instruct-Q4_KM（约 5GB）
-- 向量模型：bge-m3（嵌入模型）
+- 模型：Qwen2.5-Coder-7B-Instruct（约 4GB）
 - 推理：Ollama 本地运行，不连外网
 - 前端：VS Code + Continue.dev 扩展
-- 镜像：pip 用清华源，模型用阿里魔搭，全程国内网络
+- 安装方式：Ollama 多镜像源下载（6 个镜像自动切换），VS Code 直连官方
+- Python：自动安装 3.12.7（python.org + 华为镜像兜底）
 - 安全：不修改系统全局执行策略，只在当前进程绕过，用完即走
 
 ---
