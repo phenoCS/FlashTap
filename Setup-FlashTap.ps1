@@ -50,6 +50,26 @@ if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
 }
 $LOG_FILE = [System.IO.Path]::Combine($PROJECT_DIR, 'install.log')
 
+# ── 空白账户隔离检测 ──
+# 检测当前账户是否为"空白账户"（没有用户级 Ollama/VS Code，但有系统级的）
+# 如果是，则强制为当前账户安装用户级副本，不受系统级软件干扰
+$env:FLASHTAP_USER_SCOPE_ONLY = 'false'
+$userOllama = Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'
+$userVSCode = Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe'
+$sysOllama = Join-Path ${env:ProgramFiles} 'Ollama\ollama.exe'
+$sysVSCode = Join-Path ${env:ProgramFiles} 'Microsoft VS Code\Code.exe'
+
+$userHasOllama = Test-Path -LiteralPath $userOllama
+$userHasVSCode = Test-Path -LiteralPath $userVSCode
+$sysHasOllama = Test-Path -LiteralPath $sysOllama
+$sysHasVSCode = Test-Path -LiteralPath $sysVSCode
+
+if ((-not $userHasOllama -and $sysHasOllama) -or (-not $userHasVSCode -and $sysHasVSCode)) {
+    $env:FLASHTAP_USER_SCOPE_ONLY = 'true'
+    Write-Host "  [信息] 检测到系统级软件存在但当前账户无用户级副本，启用空白账户隔离模式" -ForegroundColor Cyan
+    Write-Host "         将为当前账户安装独立的用户级副本，不受系统级软件干扰" -ForegroundColor DarkGray
+}
+
 function Write-Log {
     param([string]$Message, [string]$Color = 'White')
     $ts = Get-Date -Format 'HH:mm:ss'
@@ -80,6 +100,7 @@ function Run-Script {
     $envContent = @"
 FLASHTAP_ORIGINAL_USER=$env:FLASHTAP_ORIGINAL_USER
 FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE
+FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
 "@
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
@@ -535,25 +556,29 @@ if (-not $configOk) {
 Write-Host ''
 Write-Log '[信息] 所有安装步骤完成，准备重启 VS Code...' 'Cyan'
 
-# ── 查找 VS Code 可执行文件（查所有注册表，含系统级 D 盘等非标准位置）──
-# 注意：这里只【查找】用于启动，不重装。install-vscode.ps1 负责安装/复用决策。
+# ── 查找 VS Code 可执行文件 ──
+# 隔离模式下只查用户级，非隔离模式查所有注册表（含系统级 D 盘等非标准位置）
 $vscExe = $null
 $vscCandidatePaths = @(
     [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs\Microsoft VS Code\Code.exe'),
-    [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe'),
-    [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe'),
-    [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe')
+    [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe')
 )
-if ($env:ProgramW6432) {
-    $vscCandidatePaths += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
+
+# 非隔离模式才查系统级路径
+if ($env:FLASHTAP_USER_SCOPE_ONLY -ne 'true') {
+    $vscCandidatePaths += [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe')
+    $vscCandidatePaths += [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe')
+    if ($env:ProgramW6432) {
+        $vscCandidatePaths += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
+    }
 }
 
-# 查所有注册表（HKCU + HKLM），找到 VS Code 安装路径（含 D 盘等非标准位置）
-$regPaths = @(
-    'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
-)
+# 注册表查找：隔离模式只查 HKCU，非隔离模式查 HKCU + HKLM
+$regPaths = @('HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')
+if ($env:FLASHTAP_USER_SCOPE_ONLY -ne 'true') {
+    $regPaths += 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    $regPaths += 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+}
 foreach ($regPath in $regPaths) {
     try {
         $entries = Get-ItemProperty -Path $regPath -ErrorAction SilentlyContinue
@@ -1084,7 +1109,7 @@ Write-Host ''
 Write-Host '════════════════════════════════════════════════════════' -ForegroundColor Green
 Write-Host ''
 Write-Host '按任意键退出...' -ForegroundColor Cyan
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { cmd /c pause >nul }
 
 } catch {
     # 全局错误捕获：打印完整错误信息，避免闪退
@@ -1103,6 +1128,6 @@ $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
     Write-Host '  请将以上错误信息截图反馈' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '按任意键退出...' -ForegroundColor Cyan
-    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { cmd /c pause >nul }
 }
 exit 0

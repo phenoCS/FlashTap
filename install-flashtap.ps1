@@ -358,26 +358,40 @@ function Install-Ollama {
     Write-Diagnostic
 
     # 纯存在性检测：只认当前用户目录下的 Ollama，不认其他用户的
-    Write-Log "  [调试] 当前 USERPROFILE=$env:USERPROFILE, USERNAME=$env:USERNAME"
-    $checkPaths = @(
-        (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
+    # 空白账户隔离模式下，连系统级 Ollama 都不认（强制为当前账户装用户级副本）
+    $userScopeOnly = ($env:FLASHTAP_USER_SCOPE_ONLY -eq 'true')
+    Write-Log "  [调试] 当前 USERPROFILE=$env:USERPROFILE, USERNAME=$env:USERNAME, USER_SCOPE_ONLY=$userScopeOnly"
+
+    # 用户级路径（始终检查）
+    $userCheckPaths = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe')
+    )
+    # 系统级路径（隔离模式下跳过）
+    $systemCheckPaths = @(
         (Join-Path ${env:ProgramFiles} 'Ollama\ollama.exe'),
         (Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) 'Ollama\ollama.exe')
     )
 
-    foreach ($cp in $checkPaths) {
+    # 检查用户级
+    foreach ($cp in $userCheckPaths) {
         if (Test-Path -LiteralPath $cp) {
-            # 只认当前用户目录下的，其他用户的跳过
-            if ($cp -like "$env:USERPROFILE*") {
-                Write-Log "  [信息] 找到当前用户的 Ollama: $cp，跳过安装"
-                return
-            } else {
-                Write-Log "  [信息] 跳过非当前用户的 Ollama: $cp"
-            }
+            Write-Log "  [信息] 找到当前用户的 Ollama: $cp，跳过安装"
+            return
         }
     }
 
-    # PATH 中查找（也过滤非当前用户目录的）
+    # 检查系统级（隔离模式下跳过，不认系统级）
+    if (-not $userScopeOnly) {
+        foreach ($cp in $systemCheckPaths) {
+            if (Test-Path -LiteralPath $cp) {
+                Write-Log "  [信息] 跳过非当前用户的 Ollama: $cp"
+            }
+        }
+    } else {
+        Write-Log "  [信息] 空白账户隔离模式：忽略系统级 Ollama，将为当前账户安装用户级副本"
+    }
+
+    # PATH 中查找（隔离模式下只认用户目录的）
     try {
         $found = Get-Command ollama.exe -ErrorAction SilentlyContinue
         if ($found) {
@@ -385,7 +399,11 @@ function Install-Ollama {
                 Write-Log "  [信息] 在 PATH 中找到当前用户的 Ollama: $($found.Source)，跳过安装"
                 return
             } else {
-                Write-Log "  [信息] 跳过非当前用户的 PATH Ollama: $($found.Source)"
+                if ($userScopeOnly) {
+                    Write-Log "  [信息] 隔离模式：忽略 PATH 中的系统级 Ollama: $($found.Source)"
+                } else {
+                    Write-Log "  [信息] 跳过非当前用户的 PATH Ollama: $($found.Source)"
+                }
             }
         }
     }

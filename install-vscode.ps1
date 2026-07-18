@@ -196,29 +196,39 @@ function Invoke-RobustDownload {
 }
 
 function Install-VSCode {
-    Write-Log '[信息] 检查是否已有可用的 VS Code（优先用户级，其次系统级只复用）...'
+    # 空白账户隔离模式：忽略系统级 VS Code，强制为当前账户安装用户级副本
+    $userScopeOnly = ($env:FLASHTAP_USER_SCOPE_ONLY -eq 'true')
+    if ($userScopeOnly) {
+        Write-Log '[信息] 空白账户隔离模式：忽略系统级 VS Code，将为当前账户安装用户级副本'
+    } else {
+        Write-Log '[信息] 检查是否已有可用的 VS Code（优先用户级，其次系统级只复用）...'
+    }
 
     # 候选路径：先用户级，再系统级
-    # 注意：系统级 VS Code（如 D:\Microsoft VS Code）只【复用】不【重装】，
-    # 避免与正在运行的 VS Code 进程冲突导致安装失败（退出码 5）
     $userCandidates = @(
         [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs\Microsoft VS Code\Code.exe'),
         [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe')
     )
-    $systemCandidates = @(
-        [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe'),
-        [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe')
-    )
-    if ($env:ProgramW6432) {
-        $systemCandidates += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
+    $systemCandidates = @()
+    if (-not $userScopeOnly) {
+        # 非隔离模式才查系统级
+        $systemCandidates = @(
+            [System.IO.Path]::Combine($env:ProgramFiles, 'Microsoft VS Code\Code.exe'),
+            [System.IO.Path]::Combine([Environment]::GetEnvironmentVariable("ProgramFiles(x86)"), 'Microsoft VS Code\Code.exe')
+        )
+        if ($env:ProgramW6432) {
+            $systemCandidates += [System.IO.Path]::Combine($env:ProgramW6432, 'Microsoft VS Code\Code.exe')
+        }
     }
 
-    # 注册表查找：先 HKCU（用户级），再 HKLM（系统级）
+    # 注册表查找：隔离模式只查 HKCU，非隔离模式查 HKCU + HKLM
     $regRoots = @(
-        @{Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'user'},
-        @{Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'system'},
-        @{Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'system'}
+        @{Path = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'user'}
     )
+    if (-not $userScopeOnly) {
+        $regRoots += @{Path = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'system'}
+        $regRoots += @{Path = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'; Scope = 'system'}
+    }
     foreach ($regRoot in $regRoots) {
         try {
             $entries = Get-ItemProperty -Path $regRoot.Path -ErrorAction SilentlyContinue
@@ -269,9 +279,10 @@ function Install-VSCode {
 
     # ── 致命安全锁：如果注册表里有任何 VS Code 记录，但上面没复用到（可能 Code.exe 被锁），
     # 绝不重装！重装会损坏正在运行的 VS Code。改为直接用注册表里的路径返回 code.cmd。
-    if ($systemCandidates.Count -gt 0 -or $userCandidates.Count -gt 0) {
-        # 取第一个候选路径（即使 Code.exe 读不了，code.cmd 可能可用）
-        $allCandidates = @($userCandidates) + @($systemCandidates)
+    # 隔离模式下只检查用户级候选，不检查系统级
+    if ($userCandidates.Count -gt 0 -or (-not $userScopeOnly -and $systemCandidates.Count -gt 0)) {
+        $allCandidates = @($userCandidates)
+        if (-not $userScopeOnly) { $allCandidates += $systemCandidates }
         foreach ($cand in $allCandidates) {
             $binDir = Split-Path -Parent $cand
             $cmdPath = Join-Path $binDir 'bin\code.cmd'
@@ -280,7 +291,6 @@ function Install-VSCode {
                 return $cmdPath
             }
         }
-        # 连 code.cmd 都没有，用 Code.exe 路径（扩展安装会通过 Code.exe --install-extension）
         if ($allCandidates.Count -gt 0) {
             Write-Log "[信息] VS Code 已安装（注册表确认），复用: $($allCandidates[0])"
             return $allCandidates[0]
@@ -289,14 +299,16 @@ function Install-VSCode {
 
     Write-Log '[信息] 目标用户无 VS Code，开始下载安装...'
 
-    # ── 最终安全锁：再次全注册表扫描，只要有任何 VS Code 就绝不安装 ──
-    # 防止因 Code.exe 被锁定导致前面漏判，从而损坏已安装的 VS Code
+    # ── 最终安全锁：再次注册表扫描，只要有任何 VS Code 就绝不安装 ──
+    # 隔离模式下只扫 HKCU（用户级），非隔离模式扫 HKCU + HKLM
     $anyVSCodeFound = $false
     $finalCheckRegRoots = @(
-        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
     )
+    if (-not $userScopeOnly) {
+        $finalCheckRegRoots += 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        $finalCheckRegRoots += 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    }
     foreach ($regRoot in $finalCheckRegRoots) {
         try {
             $entries = Get-ItemProperty -Path $regRoot -ErrorAction SilentlyContinue
