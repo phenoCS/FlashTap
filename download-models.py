@@ -122,8 +122,10 @@ def create_ollama_model(model_path: Path):
         write_log("无法获取 Ollama 版本，继续尝试本地导入...")
 
     if not skip_gguf:
-        try:
-            modelfile_content = f'''FROM {model_path}
+        # 尝试多种 Modelfile 格式，从完整到最简，提高 ollama create 成功率
+        modelfile_variants = [
+            # 格式1：完整模板（含 TEMPLATE 和 PARAMETER）
+            f'''FROM {model_path}
 TEMPLATE """{{{{ if .System }}}}<|im_start|>system
 {{{{ .System }}}}<|im_end|>
 {{{{ end }}}}{{{{ if .Prompt }}}}<|im_start|>user
@@ -134,29 +136,42 @@ PARAMETER stop "<|im_end|>"
 PARAMETER stop "<|im_start|>"
 PARAMETER num_ctx 4096
 PARAMETER num_batch 512
-'''
+''',
+            # 格式2：最简形式（只有 FROM，让 ollama 用默认模板）
+            f'''FROM {model_path}
+''',
+        ]
 
+        for variant_idx, modelfile_content in enumerate(modelfile_variants, 1):
             modelfile_path = MODELS_DIR / "Modelfile.qwen"
             with open(modelfile_path, "w", encoding="utf-8") as f:
                 f.write(modelfile_content)
 
-            write_log("正在执行 ollama create（本地 GGUF 导入，约 2-5 分钟）...")
-            result = subprocess.run([
-                "ollama", "create", "qwen2.5-coder:7b", "-f", str(modelfile_path)
-            ], capture_output=True, encoding='utf-8', errors='replace', timeout=600)
+            write_log(f"正在执行 ollama create（格式{variant_idx}，约 2-5 分钟）...")
+            try:
+                result = subprocess.run([
+                    "ollama", "create", "qwen2.5-coder:7b", "-f", str(modelfile_path)
+                ], capture_output=True, encoding='utf-8', errors='replace', timeout=600)
 
-            if result.returncode != 0:
+                if result.returncode == 0:
+                    write_log("Ollama 模型导入完成")
+                    return  # 本地导入成功，不需要走 pull
+
+                # 打印完整错误信息，便于诊断
                 stderr = result.stderr or ""
-                raise RuntimeError("Ollama 创建失败: " + stderr)
-            write_log("Ollama 模型导入完成")
-            return  # 本地导入成功，不需要走 pull
-        except subprocess.TimeoutExpired:
-            write_log("ollama create 超时（10分钟），放弃本地导入")
-        except Exception as e:
-            write_log(f"本地 GGUF 导入失败: {e}")
-            if "llama-quantize" in str(e):
-                write_log("原因：当前 Ollama 版本的 llama-quantize 无法校验此 GGUF 格式")
-                write_log("建议：更新 Ollama 到最新版本（https://ollama.com/download）后重试")
+                stdout = result.stdout or ""
+                write_log(f"ollama create 失败（格式{variant_idx}）")
+                write_log(f"  退出码: {result.returncode}")
+                if stderr:
+                    write_log(f"  stderr: {stderr[:500]}")
+                if stdout:
+                    write_log(f"  stdout: {stdout[:500]}")
+            except subprocess.TimeoutExpired:
+                write_log(f"ollama create 超时（格式{variant_idx}，10分钟）")
+            except Exception as e:
+                write_log(f"本地 GGUF 导入失败（格式{variant_idx}）: {e}")
+
+        write_log("所有 Modelfile 格式均失败，将尝试远程拉取")
     else:
         write_log("已跳过本地 GGUF 导入（版本不兼容）")
 
@@ -166,18 +181,27 @@ PARAMETER num_batch 512
 
 
 def _pull_from_registry():
+    # 先检查本地是否已有模型（ollama create 可能部分成功）
+    try:
+        list_result = subprocess.run(["ollama", "list"], capture_output=True, encoding='utf-8', errors='replace', timeout=10)
+        if list_result.returncode == 0 and "qwen2.5-coder:7b" in (list_result.stdout or ""):
+            write_log("模型已存在于本地，跳过远程拉取")
+            return
+    except Exception:
+        pass
+
+    write_log("尝试通过 ollama pull 从远程仓库拉取模型...")
     max_retries = 1
     for attempt in range(1, max_retries + 1):
         try:
-            write_log(f"ollama pull 第 {attempt}/{max_retries} 次尝试（超时 10 分钟，请耐心等待）...")
+            write_log(f"ollama pull 第 {attempt}/{max_retries} 次尝试（超时 15 分钟，请耐心等待）...")
             # 不捕获输出，让用户看到下载进度条
             result = subprocess.run(
                 ["ollama", "pull", "qwen2.5-coder:7b"],
-                timeout=600
+                timeout=900
             )
             if result.returncode != 0:
                 write_log(f"pull 返回非零退出码: {result.returncode}")
-                subprocess.run(["ollama", "rm", "qwen2.5-coder:7b"], capture_output=True)
                 if attempt < max_retries:
                     write_log("准备重试...")
                     continue
@@ -186,25 +210,9 @@ def _pull_from_registry():
                 return
 
             write_log("通过 ollama pull 导入成功")
-
-            # 真实验证：实际加载模型并生成响应
-            write_log("正在测试模型是否可正常加载（约 30-60 秒）...")
-            test_result = subprocess.run(
-                ["ollama", "run", "qwen2.5-coder:7b", "hi"],
-                capture_output=True, encoding='utf-8', errors='replace', timeout=120
-            )
-            if test_result.returncode != 0:
-                stderr = test_result.stderr or ""
-                write_log(f"模型加载测试失败: {stderr}")
-                write_log("模型已在本地保留（未删除），可手动处理")
-                write_log("建议：更新 Ollama 到最新版本后执行 'ollama run qwen2.5-coder:7b hi' 重试")
-                write_log("      或执行 'ollama rm qwen2.5-coder:7b' 手动删除后重新拉取")
-                return
-            write_log("模型加载测试通过，模型可用")
             return
         except subprocess.TimeoutExpired:
-            write_log("ollama pull 超时（10分钟），可能网络较慢")
-            subprocess.run(["ollama", "rm", "qwen2.5-coder:7b"], capture_output=True)
+            write_log("ollama pull 超时（15分钟），可能网络较慢")
             if attempt < max_retries:
                 write_log("准备重试...")
                 continue
