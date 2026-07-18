@@ -502,16 +502,48 @@ def check_and_update_ollama():
 
 
 def ensure_ollama_paths():
-    r"""确保 Ollama 使用 D 盘无中文路径，避免 llama.cpp 编码问题。
+    r"""确保 Ollama 使用无中文路径，避免 llama.cpp 编码问题。
     Ollama Windows 服务以 SYSTEM 账户运行，看不到用户级环境变量，
     默认使用 %USERPROFILE%\.ollama，中文用户名会导致 llama.cpp 崩溃。
 
-    策略：先尝试重启 Windows 服务；若失败（用户级安装），则 spawn ollama serve。"""
-    models_dir = r"D:\ollama_models"
-    home_dir = r"D:\ollama_data"
+    策略：优先用 install-flashtap.ps1 已设置的 OLLAMA_MODELS 环境变量；
+    若不可写则按候选列表回退；最后重启服务或 spawn ollama serve。"""
+    # 候选目录：环境变量优先 → D盘 → 用户目录 → LOCALAPPDATA
+    candidates = []
+    env_models = os.environ.get("OLLAMA_MODELS", "").strip()
+    if env_models:
+        candidates.append(env_models)
+    candidates.extend([
+        r"D:\ollama_models",
+        os.path.join(os.environ.get("USERPROFILE", r"C:\Users\Default"), ".ollama", "models"),
+        os.path.join(os.environ.get("LOCALAPPDATA", r"C:\Users\Default\AppData\Local"), "ollama", "models"),
+    ])
 
-    os.makedirs(models_dir, exist_ok=True)
-    os.makedirs(home_dir, exist_ok=True)
+    # 逐个实测可写性（创建+写探测文件+删除）
+    models_dir = None
+    for d in candidates:
+        if not d:
+            continue
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, ".flashtap_write_probe")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+            models_dir = d
+            write_log(f"模型目录可用: {d}")
+            break
+        except Exception as e:
+            write_log(f"候选目录不可用: {d} ({e})")
+    if not models_dir:
+        models_dir = os.path.join(os.environ.get("USERPROFILE", r"C:\Users\Default"), ".ollama", "models")
+        write_log(f"所有候选不可用，兜底使用: {models_dir}")
+
+    home_dir = os.path.join(os.path.dirname(models_dir), "home")
+    try:
+        os.makedirs(home_dir, exist_ok=True)
+    except Exception:
+        home_dir = models_dir  # 兜底
 
     # 1. 停止所有 ollama 进程
     write_log("正在停止 Ollama 进程...")
@@ -541,7 +573,6 @@ def ensure_ollama_paths():
         write_log("Ollama Windows 服务已启动")
     else:
         write_log(f"Windows 服务不可用（退出码 {sr.returncode}），改用后台进程启动")
-        # 通过 PowerShell Start-Process 启动，完全独立，零句柄继承，无黑窗
         try:
             ps_cmd = (
                 f'$env:OLLAMA_MODELS="{models_dir}"; '
@@ -552,24 +583,27 @@ def ensure_ollama_paths():
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, timeout=10,
             )
-            write_log("ollama serve 已通过 PowerShell 后台启动（独立进程，无句柄继承）")
+            write_log("ollama serve 已通过 PowerShell 后台启动")
         except Exception as e:
             write_log(f"ollama serve 启动失败: {e}")
 
-    # 5. 等待服务就绪（最多 15 秒）
-    for i in range(15):
-        time.sleep(1)
+    # 5. 等待服务就绪（最多 90 秒，虚拟机可能较慢）
+    write_log("等待 Ollama 服务就绪...")
+    for i in range(30):
+        time.sleep(3)
         try:
-            r = subprocess.run(["ollama", "list"], capture_output=True, timeout=5)
+            r = subprocess.run(["ollama", "list"], capture_output=True, timeout=8)
             if r.returncode == 0:
-                write_log("Ollama 服务已就绪（D 盘模型目录，无中文路径）")
+                write_log(f"Ollama 服务已就绪（等待 {(i+1)*3} 秒）")
                 return True
         except subprocess.TimeoutExpired:
             pass
         except Exception:
             pass
+        if (i + 1) % 5 == 0:
+            write_log(f"  仍在等待... ({(i+1)*3}/90 秒)")
 
-    write_log("警告: Ollama 服务启动超时，继续尝试部署...")
+    write_log("警告: Ollama 服务 90 秒内未就绪，继续尝试部署...")
     return False
 
 

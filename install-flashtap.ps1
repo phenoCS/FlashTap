@@ -101,14 +101,29 @@ function Write-Diagnostic {
         Write-Log "  [诊断] ghproxy.net: 不通" -Color 'Yellow'
     }
 
-    # 磁盘空间
+    # 磁盘空间（检查所有可用盘符，警告低磁盘）
     try {
-        $drive = (Get-Location).Drive.Name
-        $free = (Get-PSDrive $drive).Free
-        $freeGB = [math]::Round($free / 1GB, 1)
-        Write-Log "  [诊断] 磁盘剩余: ${freeGB}GB"
-        if ($free -lt 5GB) {
-            Write-Log "  [诊断] 磁盘空间不足 (不足5GB)，可能安装失败" -Color 'Red'
+        $drives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue
+        foreach ($drv in $drives) {
+            if (-not $drv.Free) { continue }
+            $freeGB = [math]::Round($drv.Free / 1GB, 1)
+            $drvName = "$($drv.Name):"
+            if ($freeGB -lt 5GB / 1GB) {
+                Write-Log "  [诊断] ${drvName} 剩余 ${freeGB}GB（不足 5GB，可能安装失败）" 'Red'
+            } else {
+                Write-Log "  [诊断] ${drvName} 剩余 ${freeGB}GB"
+            }
+        }
+        # 单独检查系统盘（Ollama + VS Code 安装位置）
+        $sysDrive = $env:SystemDrive
+        if ($sysDrive) {
+            $sysFree = (Get-PSDrive -Name $sysDrive[0] -ErrorAction SilentlyContinue).Free
+            if ($sysFree) {
+                $sysFreeGB = [math]::Round($sysFree / 1GB, 1)
+                if ($sysFree -lt 8GB) {
+                    Write-Log "  [诊断] 系统盘 ${sysDrive} 空间不足 8GB（当前 ${sysFreeGB}GB），模型+Ollama 可能装不下" 'Red'
+                }
+            }
         }
     } catch { }
 
@@ -411,44 +426,47 @@ function Configure-Ollama {
         Write-Log "  [警告] 环境变量设置失败: $($_.Exception.Message)"
     }
 
-    # 模型目录
-
-    # 智能选择模型目录：D盘可用则用D盘，否则用用户目录
-    $modelsDir = $null
-    $preferredDirs = @(
+    # 模型目录：逐个候选尝试【创建+写入】校验，第一个成功的就用
+    # 虚拟机 D 盘可能只读/不存在/权限拒绝，必须实测可写性而非仅 Test-Path
+    $candidates = @(
         'D:\ollama_models',
-        [System.IO.Path]::Combine($env:USERPROFILE, '.ollama\models'),
-        [System.IO.Path]::Combine($env:LOCALAPPDATA, 'ollama\models')
+        (Join-Path $env:USERPROFILE '.ollama\models'),
+        (Join-Path $env:LOCALAPPDATA 'ollama\models')
     )
-    foreach ($dir in $preferredDirs) {
+    $modelsDir = $null
+    foreach ($dir in $candidates) {
+        $parent = Split-Path -Parent $dir
+        if (-not (Test-Path -LiteralPath $parent)) { continue }
         try {
-            $parent = Split-Path -Parent $dir
-            if (Test-Path -LiteralPath $parent) {
-                $modelsDir = $dir
-                break
+            # 实测：创建目录 + 写探测文件 + 删除，三步都成功才算可写
+            if (-not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Path $dir -Force -ErrorAction Stop | Out-Null
             }
-        } catch {}
+            $probe = Join-Path $dir '.flashtap_write_probe'
+            Set-Content -LiteralPath $probe -Value 'ok' -ErrorAction Stop
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            $modelsDir = $dir
+            Write-Log "  [信息] 模型目录可用: $dir"
+            break
+        } catch {
+            Write-Log "  [信息] 候选目录不可用: $dir ($($_.Exception.Message))" 'DarkGray'
+        }
     }
     if (-not $modelsDir) {
-        $modelsDir = [System.IO.Path]::Combine($env:USERPROFILE, '.ollama\models')
+        $modelsDir = Join-Path $env:USERPROFILE '.ollama\models'
+        Write-Log "  [信息] 所有候选不可用，兜底使用: $modelsDir" 'Yellow'
     }
-
-    Write-Log "  [信息] 模型目录: $modelsDir"
 
     try {
         if (-not (Test-Path -LiteralPath $modelsDir)) {
             New-Item -ItemType Directory -Path $modelsDir -Force -ErrorAction Stop | Out-Null
-            Write-Log '  [成功] 模型目录已创建'
-        }
-        else {
-            Write-Log '  [信息] 模型目录已存在'
         }
         [Environment]::SetEnvironmentVariable('OLLAMA_MODELS', $modelsDir, $envTarget)
+        $env:OLLAMA_MODELS = $modelsDir
         Write-Log "  [成功] OLLAMA_MODELS = $modelsDir"
     }
     catch {
-        Write-Log "  [警告] 无法创建模型目录: $($_.Exception.Message)"
-        Write-Log "  [警告] Ollama 将使用默认模型目录" 'Yellow'
+        Write-Log "  [警告] 无法创建模型目录: $($_.Exception.Message)，Ollama 将使用默认目录" 'Yellow'
     }
 }
 
@@ -493,29 +511,41 @@ function Start-Ollama {
         Write-Log "  [警告] Windows服务启动失败: $($_.Exception.Message)"
     }
 
-    # 快速检查是否已在运行（用 Job 实现超时，避免 ReadToEnd 死锁）
+    # 检查是否已在运行（轮询重试，适配虚拟机后台进程延迟）
     Write-Log '  [信息] 检查 Ollama 是否已在运行...'
     $alreadyRunning = $false
-    try {
-        $checkJob = Start-Job -ScriptBlock {
-            param($exe)
-            & $exe list 2>&1 | Out-Null
-            return $LASTEXITCODE
-        } -ArgumentList $ollamaExe
+    $maxAttempts = 3
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            $checkJob = Start-Job -ScriptBlock {
+                param($exe, $envPath, $modelsDir)
+                $env:Path = $envPath
+                if ($modelsDir) { $env:OLLAMA_MODELS = $modelsDir }
+                & $exe list 2>&1 | Out-Null
+                return $LASTEXITCODE
+            } -ArgumentList $ollamaExe, $env:Path, $env:OLLAMA_MODELS
 
-        $completed = Wait-Job $checkJob -Timeout 5
-        if ($completed) {
-            $result = Receive-Job $checkJob
-            if ($result -eq 0) {
-                $alreadyRunning = $true
-                Write-Log '  [成功] Ollama服务已在运行'
+            # 每次等 10 秒（虚拟机后台进程启动慢），共 3 次 = 30 秒
+            $completed = Wait-Job $checkJob -Timeout 10
+            if ($completed) {
+                $result = Receive-Job $checkJob
+                if ($result -eq 0) {
+                    $alreadyRunning = $true
+                    Write-Log '  [成功] Ollama 服务已在运行'
+                    break
+                }
             }
-        } else {
-            Write-Log '  [信息] ollama list 超时，假设未运行'
+            Remove-Job $checkJob -Force -ErrorAction SilentlyContinue
+            if ($attempt -lt $maxAttempts) {
+                Write-Log "  [信息] 第 $attempt/$maxAttempts 次检测未就绪，等待 3 秒后重试..."
+                Start-Sleep -Seconds 3
+            }
+        } catch {
+            Write-Log "  [信息] 第 $attempt 次检测异常: $($_.Exception.Message)"
         }
-        Remove-Job $checkJob -Force -ErrorAction SilentlyContinue
-    } catch {
-        Write-Log '  [信息] 检查失败，继续启动'
+    }
+    if (-not $alreadyRunning) {
+        Write-Log '  [信息] 多次检测后确认 Ollama 未运行，准备启动'
     }
 
     if ($alreadyRunning) { return }
@@ -523,6 +553,7 @@ function Start-Ollama {
     # 后台启动（UseShellExecute=$true 独立进程，不阻塞当前脚本）
     Kill-AllOllama
     Write-Log '  [信息] 正在后台启动 Ollama serve...'
+    $ollamaProc = $null
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $ollamaExe
@@ -531,13 +562,50 @@ function Start-Ollama {
         $psi.UseShellExecute = $true
         $ollamaProc = [System.Diagnostics.Process]::Start($psi)
         if ($ollamaProc) {
-            Write-Log "  [信息] Ollama serve 已启动（PID: $($ollamaProc.Id)），不等待初始化完成"
+            Write-Log "  [信息] Ollama serve 已启动（PID: $($ollamaProc.Id)）"
         } else {
             Write-Log '  [警告] 启动 ollama serve 返回空'
         }
     }
     catch {
         Write-Log "  [警告] 后台启动失败: $($_.Exception.Message)"
+        return
+    }
+
+    # ── 启动后校验服务就绪（最多等 60 秒） ──
+    # 不等待会导致后续 download-models.py 调 ollama create 失败
+    Write-Log '  [信息] 等待 Ollama 服务就绪...'
+    $ready = $false
+    for ($i = 1; $i -le 20; $i++) {
+        Start-Sleep -Seconds 3
+        try {
+            $probeJob = Start-Job -ScriptBlock {
+                param($exe, $envPath, $modelsDir)
+                $env:Path = $envPath
+                if ($modelsDir) { $env:OLLAMA_MODELS = $modelsDir }
+                & $exe list 2>&1 | Out-Null
+                return $LASTEXITCODE
+            } -ArgumentList $ollamaExe, $env:Path, $env:OLLAMA_MODELS
+            $done = Wait-Job $probeJob -Timeout 8
+            if ($done) {
+                $code = Receive-Job $probeJob
+                Remove-Job $probeJob -Force -ErrorAction SilentlyContinue
+                if ($code -eq 0) {
+                    $ready = $true
+                    Write-Log "  [成功] Ollama 服务已就绪（等待 $($i * 3) 秒后响应）"
+                    break
+                }
+            } else {
+                Remove-Job $probeJob -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            # 继续重试
+        }
+        Write-Log "  [信息] 服务未就绪，继续等待... ($($i)/20)"
+    }
+    if (-not $ready) {
+        Write-Log '  [警告] Ollama 服务 60 秒内未就绪，后续步骤可能失败' 'Yellow'
+        Write-Log '  [信息] 建议：手动运行 ollama serve 启动服务后重试' 'Yellow'
     }
 }
 
