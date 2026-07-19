@@ -134,17 +134,20 @@ FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
     # 用 & 直接调用 powershell.exe（同窗口，日志直接输出到当前终端）
-    # 不用 cmd /c（中文路径在 cmd 下会乱码）
-    # 用 -Command 方式调用，路径用单引号包裹避免特殊字符问题
-    $psArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FilePath)
+    # 不用 splatting @psArgs（PowerShell 5.1 下传中文路径会断裂，子进程静默退出无输出）
+    # 改用字符串拼接 + & 调用，路径用双引号包裹
+    $cmdStr = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`""
     if ($ArgumentList.Count -gt 0) {
-        $psArgs += $ArgumentList
+        foreach ($a in $ArgumentList) {
+            $cmdStr += " `"$a`""
+        }
     }
 
     $ec = 1  # 默认失败
     try {
         $global:LASTEXITCODE = $null
-        & 'powershell.exe' @psArgs
+        # 用 Invoke-Expression 执行，确保字符串里的路径和参数被正确解析
+        Invoke-Expression "& powershell.exe $cmdStr"
         if ($global:LASTEXITCODE -ne $null) {
             $ec = [int]$global:LASTEXITCODE
         } else {
