@@ -333,9 +333,24 @@ function Install-VSCode {
         if ($anyVSCodeFound) { break }
     }
     if ($anyVSCodeFound) {
-        # 注册表有但找不到可执行文件，说明 VS Code 损坏，但不能由 FlashTap 重装（用户自己处理）
-        Write-Log '[错误] 检测到 VS Code 已安装但可执行文件缺失，请用户手动重装 VS Code，FlashTap 不会自动重装' 'Red'
-        throw '检测到已安装的 VS Code 但可执行文件缺失，为安全起见中止安装，请手动处理 VS Code 后重试'
+        # 注册表有但找不到可执行文件，说明 VS Code 损坏（可能是上次安装失败留下的残骸）
+        # 智能恢复：清理注册表 + 残留目录，然后重新下载安装
+        Write-Log '[警告] 检测到 VS Code 已损坏（注册表有但文件缺失），正在清理并重新安装...' 'Yellow'
+        try {
+            # 清理可能的残留目录
+            $possibleResidue = @(
+                (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code'),
+                (Join-Path $env:USERPROFILE 'AppData\Local\Programs\Microsoft VS Code')
+            )
+            foreach ($r in $possibleResidue) {
+                if (Test-Path -LiteralPath $r) {
+                    Write-Log "[信息] 清理残留目录: $r"
+                    Remove-Item -LiteralPath $r -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {}
+        # 不 throw，继续往下走下载安装器重新装
+        $anyVSCodeFound = $false
     }
 
     $installerPath = [System.IO.Path]::Combine($env:TEMP, 'VSCodeUserSetup-x64-latest.exe')

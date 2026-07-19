@@ -244,6 +244,27 @@ def verify_model():
         if test_result.returncode != 0:
             stderr = test_result.stderr or ""
             write_log(f"模型加载测试失败: {stderr}")
+            # 智能识别常见错误并给出建议
+            if "0xC0000005" in stderr or "memory could not be read" in stderr.lower() or "out of memory" in stderr.lower():
+                write_log("")
+                write_log("=" * 60)
+                write_log("检测到显存不足错误！")
+                write_log("可能原因：")
+                write_log("  1. 显卡显存不够（8GB 显卡跑 7B 模型 + VS Code + 后台进程会爆）")
+                write_log("  2. 其他程序占用了显存（Chrome、PS、PR 等）")
+                write_log("  3. Ollama 环境变量 OLLAMA_MAX_VRAM 设置过大")
+                write_log("")
+                write_log("建议：")
+                write_log("  1. 关闭其他占用显存的程序（VS Code、Chrome、Adobe 等）")
+                write_log("  2. 重启电脑后再使用（释放所有显存）")
+                write_log("  3. 手动测试：PowerShell 中运行 ollama run qwen2.5-coder:7b 'hi'")
+                write_log("  4. 如果仍失败，可能需要换更小的模型（如 qwen2.5-coder:1.5b）")
+                write_log("=" * 60)
+            elif "connection refused" in stderr.lower() or "failed to connect" in stderr.lower():
+                write_log("")
+                write_log("Ollama 服务未运行！请手动启动：")
+                write_log("  1. 开始菜单搜索 Ollama 并启动")
+                write_log("  2. 或在 PowerShell 中运行: ollama serve")
             return False
         write_log("模型验证通过（实际加载测试成功）")
         return True
