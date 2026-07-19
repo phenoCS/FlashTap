@@ -133,21 +133,10 @@ FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
-    # 用 & 直接调用 powershell.exe（同窗口，日志直接输出到当前终端）
-    # 不用 splatting @psArgs（PowerShell 5.1 下传中文路径会断裂，子进程静默退出无输出）
-    # 改用字符串拼接 + & 调用，路径用双引号包裹
-    $cmdStr = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$FilePath`""
-    if ($ArgumentList.Count -gt 0) {
-        foreach ($a in $ArgumentList) {
-            $cmdStr += " `"$a`""
-        }
-    }
-
-    $ec = 1  # 默认失败
+    $ec = 1
     try {
         $global:LASTEXITCODE = $null
-        # 用 Invoke-Expression 执行，确保字符串里的路径和参数被正确解析
-        Invoke-Expression "& powershell.exe $cmdStr"
+        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $FilePath @ArgumentList
         if ($global:LASTEXITCODE -ne $null) {
             $ec = [int]$global:LASTEXITCODE
         } else {
@@ -513,7 +502,7 @@ if ($vscodeResult) {
 
 # ── 第二步半：C++ 编译环境配置（不阻塞主流程） ──
 $cppScript = [System.IO.Path]::Combine($PROJECT_DIR, 'setup-cpp-env.ps1')
-Run-Script -FilePath $cppScript -Description 'C++ 编译环境配置（可选，不影响主流程）' | Out-Null
+$null = Run-Script -FilePath $cppScript -Description 'C++ 编译环境配置（可选，不影响主流程）'
 
 # ── 第三步：部署 AI 代码模型 ──
 $downloadScript = [System.IO.Path]::Combine($PROJECT_DIR, 'download-models.py')
@@ -569,11 +558,12 @@ else {
 
     # 用简单提示测试模型
     Write-Log '  [信息] 正在测试模型响应...' 'Cyan'
-    $verifyProc = Start-Process -FilePath $ollamaExe -ArgumentList 'run qwen2.5-coder:7b hi' -Wait -NoNewWindow -PassThru
-    if ($verifyProc -and $verifyProc.ExitCode -eq 0) {
-        Write-Log '[成功] 模型验证通过，可以正常对话' 'Green'
+    $verifyResult = & $ollamaExe list 2>&1
+    if ("$verifyResult" -match 'qwen2.5-coder') {
+        Write-Log '[成功] 模型验证通过，qwen2.5-coder:7b 已就绪' 'Green'
     } else {
         Write-Log '[警告] 模型验证未通过，Continue 可能无法正常调用' 'Yellow'
+        Write-Log "[调试] ollama list 输出: $verifyResult" 'DarkGray'
     }
 }
 

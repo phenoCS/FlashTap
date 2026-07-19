@@ -325,7 +325,7 @@ function Install-Ollama-From-Exe {
     Write-Log '  [步骤 2/4] 正在启动 Ollama 静默安装器...'
     $installStart = Get-Date
 
-    $installProcess = Start-Process -FilePath $InstallerPath -ArgumentList '/verysilent /norestart /suppressmsgboxes' -PassThru
+    $installProcess = Start-Process -FilePath $InstallerPath -ArgumentList '/verysilent /norestart /suppressmsgboxes' -PassThru -NoNewWindow
     if (-not $installProcess) {
         throw '无法启动Ollama安装程序，请检查安装包是否完整'
     }
