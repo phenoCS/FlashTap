@@ -65,6 +65,7 @@ function Write-Log {
 # ── 环境诊断 ──
 function Write-Diagnostic {
     Write-Log '────────── 环境诊断 ──────────'
+    $script:diagStart = [System.Diagnostics.Stopwatch]::StartNew()
 
     # 管理员权限
     $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator')
@@ -86,19 +87,19 @@ function Write-Diagnostic {
         Write-Log '  [诊断] DNS(github.com): 解析失败' -Color 'Red'
     }
 
-    # 网络连通性
-    try {
-        $r = Invoke-WebRequest -Uri 'https://github.com' -Method Head -TimeoutSec 5 -UseBasicParsing
-        Write-Log "  [诊断] 直连 GitHub: 通 (HTTP $($r.StatusCode))"
-    } catch {
-        Write-Log "  [诊断] 直连 GitHub: 不通" -Color 'Yellow'
+    # 网络连通性（用 Test-UrlQuick 带真正可靠的超时，避免 Invoke-WebRequest 超时失效卡死）
+    $code = Test-UrlQuick -Url 'https://github.com' -TimeoutSec 8
+    if ($code -gt 0) {
+        Write-Log "  [诊断] 直连 GitHub: 通 (HTTP $code)"
+    } else {
+        Write-Log "  [诊断] 直连 GitHub: 不通" 'Yellow'
     }
 
-    try {
-        $r = Invoke-WebRequest -Uri 'https://ghproxy.net' -Method Head -TimeoutSec 5 -UseBasicParsing
-        Write-Log "  [诊断] ghproxy.net: 通 (HTTP $($r.StatusCode))"
-    } catch {
-        Write-Log "  [诊断] ghproxy.net: 不通" -Color 'Yellow'
+    $code = Test-UrlQuick -Url 'https://ghproxy.net' -TimeoutSec 8
+    if ($code -gt 0) {
+        Write-Log "  [诊断] ghproxy.net: 通 (HTTP $code)"
+    } else {
+        Write-Log "  [诊断] ghproxy.net: 不通" 'Yellow'
     }
 
     # 磁盘空间（检查所有可用盘符，警告低磁盘）
@@ -136,6 +137,37 @@ function Write-Diagnostic {
     }
 
     Write-Log '──────────────────────────────'
+}
+
+# ── 辅助函数：带超时的网络请求（避免 Invoke-WebRequest 超时失效导致卡死） ──
+function Test-UrlQuick {
+    param([string]$Url, [int]$TimeoutSec = 8)
+    $job = Start-Job -ScriptBlock {
+        param($u, $envPath)
+        $env:Path = $envPath
+        try {
+            $req = [System.Net.HttpWebRequest]::Create($u)
+            $req.Timeout = $TimeoutSec * 1000
+            $req.Method = 'HEAD'
+            $req.AllowAutoRedirect = $true
+            $resp = $req.GetResponse()
+            $code = [int]$resp.StatusCode
+            $resp.Close()
+            return $code
+        } catch {
+            return 0
+        }
+    } -ArgumentList $Url, $env:Path
+
+    $completed = Wait-Job $job -Timeout ($TimeoutSec + 2)
+    $result = 0
+    if ($completed) {
+        $result = Receive-Job $job
+    } else {
+        Stop-Job $job -Force
+    }
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    return $result
 }
 
 # ── 终极杀Ollama全部进程（PID + 进程名 + taskkill 三管齐下） ──
