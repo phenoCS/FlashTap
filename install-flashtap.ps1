@@ -189,11 +189,11 @@ function Write-Diagnostic {
 function Test-UrlQuick {
     param([string]$Url, [int]$TimeoutSec = 8)
     $job = Start-Job -ScriptBlock {
-        param($u, $envPath)
+        param($u, $envPath, $timeoutMs)
         $env:Path = $envPath
         try {
             $req = [System.Net.HttpWebRequest]::Create($u)
-            $req.Timeout = $TimeoutSec * 1000
+            $req.Timeout = $timeoutMs
             $req.Method = 'HEAD'
             $req.AllowAutoRedirect = $true
             $resp = $req.GetResponse()
@@ -203,7 +203,7 @@ function Test-UrlQuick {
         } catch {
             return 0
         }
-    } -ArgumentList $Url, $env:Path
+    } -ArgumentList $Url, $env:Path, ($TimeoutSec * 1000)
 
     $completed = Wait-Job $job -Timeout ($TimeoutSec + 2)
     $result = 0

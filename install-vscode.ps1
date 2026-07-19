@@ -448,7 +448,11 @@ function Install-VSCode {
 
     # 重新查找安装好的 VS Code
     Start-Sleep -Seconds 2
-    foreach ($cand in $vscCandidates) {
+    $postInstallCandidates = @(
+        [System.IO.Path]::Combine($env:LOCALAPPDATA, 'Programs\Microsoft VS Code\Code.exe'),
+        [System.IO.Path]::Combine($env:USERPROFILE, 'AppData\Local\Programs\Microsoft VS Code\Code.exe')
+    )
+    foreach ($cand in $postInstallCandidates) {
         if (Test-RealVSCode -Path $cand) {
             $binDir = Split-Path -Parent $cand
             $cmdPath = [System.IO.Path]::Combine($binDir, 'bin\code.cmd')
