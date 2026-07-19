@@ -1,12 +1,18 @@
 ﻿<# FlashTap: Ollama 安装与配置 #>
 
 $ErrorActionPreference = 'Continue'
+
+Write-Host '  [启动] Ollama 安装脚本正在初始化...' -ForegroundColor Cyan
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# 自动继承系统代理设置（不用管理员模式也能走国际网络）
-$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-[System.Net.WebRequest]::DefaultWebProxy = $proxy
+try {
+    $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+    $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    [System.Net.WebRequest]::DefaultWebProxy = $proxy
+} catch {
+    Write-Host '  [信息] 代理检测跳过（虚拟机环境可能不支持）' -ForegroundColor DarkGray
+}
 
 # ── 脚本目录检测（必须最先执行，后续依赖 PROJECT_DIR） ──
 $PROJECT_DIR = $PSScriptRoot
@@ -74,28 +80,68 @@ function Write-Diagnostic {
     # PowerShell 版本
     Write-Log "  [诊断] PowerShell: $($PSVersionTable.PSVersion)"
 
-    # 系统代理
-    $sysProxy = [System.Net.WebRequest]::GetSystemWebProxy()
-    $proxyUri = $sysProxy.GetProxy('https://github.com')
-    Write-Log "  [诊断] 系统代理: $(if ($proxyUri -ne 'https://github.com') { $proxyUri } else { '无' })"
-
-    # DNS 解析
+    # 系统代理（用 Register-WaitEvent 带超时，普通电脑秒过，卡住最多等 5 秒）
     try {
-        $ips = [System.Net.Dns]::GetHostAddresses('github.com')
-        Write-Log "  [诊断] DNS(github.com): $($ips[0])"
+        $proxyResult = $null
+        $proxyJob = Start-Job -ScriptBlock {
+            try {
+                $p = [System.Net.WebRequest]::GetSystemWebProxy()
+                return $p.GetProxy('https://github.com').ToString()
+            } catch { return 'FAIL' }
+        }
+        $proxyDone = Wait-Job $proxyJob -Timeout 5
+        if ($proxyDone) {
+            $proxyResult = Receive-Job $proxyJob
+            Remove-Job $proxyJob -Force -ErrorAction SilentlyContinue
+            if ($proxyResult -and $proxyResult -ne 'https://github.com/' -and $proxyResult -ne 'FAIL') {
+                Write-Log "  [诊断] 系统代理: $proxyResult"
+            } else {
+                Write-Log '  [诊断] 系统代理: 无'
+            }
+        } else {
+            Stop-Job $proxyJob -Force -ErrorAction SilentlyContinue
+            Remove-Job $proxyJob -Force -ErrorAction SilentlyContinue
+            Write-Log '  [诊断] 系统代理: 检测超时（跳过）' 'Yellow'
+        }
     } catch {
-        Write-Log '  [诊断] DNS(github.com): 解析失败' -Color 'Red'
+        Write-Log '  [诊断] 系统代理: 检测失败（跳过）' 'Yellow'
+    }
+
+    # DNS 解析（用 Start-Job 带超时，普通电脑秒过，卡住最多等 8 秒）
+    try {
+        $dnsJob = Start-Job -ScriptBlock {
+            param($h)
+            try {
+                return [System.Net.Dns]::GetHostAddresses($h)[0].ToString()
+            } catch { return 'FAIL' }
+        } -ArgumentList 'github.com'
+        $dnsDone = Wait-Job $dnsJob -Timeout 8
+        if ($dnsDone) {
+            $dnsResult = Receive-Job $dnsJob
+            Remove-Job $dnsJob -Force -ErrorAction SilentlyContinue
+            if ($dnsResult -and $dnsResult -ne 'FAIL') {
+                Write-Log "  [诊断] DNS(github.com): $dnsResult"
+            } else {
+                Write-Log '  [诊断] DNS(github.com): 解析失败' 'Red'
+            }
+        } else {
+            Stop-Job $dnsJob -Force -ErrorAction SilentlyContinue
+            Remove-Job $dnsJob -Force -ErrorAction SilentlyContinue
+            Write-Log '  [诊断] DNS(github.com): 解析超时（跳过）' 'Yellow'
+        }
+    } catch {
+        Write-Log '  [诊断] DNS(github.com): 检测异常（跳过）' 'Yellow'
     }
 
     # 网络连通性（用 Test-UrlQuick 带真正可靠的超时，避免 Invoke-WebRequest 超时失效卡死）
-    $code = Test-UrlQuick -Url 'https://github.com' -TimeoutSec 8
+    $code = Test-UrlQuick -Url 'https://github.com' -TimeoutSec 5
     if ($code -gt 0) {
         Write-Log "  [诊断] 直连 GitHub: 通 (HTTP $code)"
     } else {
         Write-Log "  [诊断] 直连 GitHub: 不通" 'Yellow'
     }
 
-    $code = Test-UrlQuick -Url 'https://ghproxy.net' -TimeoutSec 8
+    $code = Test-UrlQuick -Url 'https://ghproxy.net' -TimeoutSec 5
     if ($code -gt 0) {
         Write-Log "  [诊断] ghproxy.net: 通 (HTTP $code)"
     } else {

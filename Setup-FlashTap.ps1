@@ -36,10 +36,13 @@ $ErrorActionPreference = 'Continue'
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# 自动继承系统代理设置
-$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-[System.Net.WebRequest]::DefaultWebProxy = $proxy
+try {
+    $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+    $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+    [System.Net.WebRequest]::DefaultWebProxy = $proxy
+} catch {
+    Write-Host '  [信息] 代理检测跳过' -ForegroundColor DarkGray
+}
 
 $PROJECT_DIR = $PSScriptRoot
 if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
@@ -135,8 +138,13 @@ FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
 
     $ec = 1
     try {
+        Write-Log "[信息] 正在启动子脚本: $FilePath" 'Cyan'
         $global:LASTEXITCODE = $null
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $FilePath @ArgumentList
+        if ($ArgumentList.Count -gt 0) {
+            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $FilePath @ArgumentList
+        } else {
+            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $FilePath
+        }
         if ($global:LASTEXITCODE -ne $null) {
             $ec = [int]$global:LASTEXITCODE
         } else {
@@ -1009,10 +1017,11 @@ int main() {
                         Write-Log '  [信息] 正在下载中文语言包...' 'Cyan'
                         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# 自动继承系统代理设置
-$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-[System.Net.WebRequest]::DefaultWebProxy = $proxy
+                        try {
+                            $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+                            $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+                            [System.Net.WebRequest]::DefaultWebProxy = $proxy
+                        } catch {}
                         Invoke-WebRequest -Uri 'https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MS-CEINTL/vsextensions/vscode-language-pack-zh-hans/latest/vspackage' -OutFile $langVsix -UseBasicParsing
 
                         # VSIX 本质是 ZIP，直接解压
