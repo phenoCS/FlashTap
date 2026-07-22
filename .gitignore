@@ -26,4 +26,6 @@ models/
 .flashtap-env.txt
 flashtap-user.txt
 .ollama_latest_version
-.wsl-distro-name
+.wsl-distro-namemingw64.zip  
+vsix_stage/  
+*.vsix 
