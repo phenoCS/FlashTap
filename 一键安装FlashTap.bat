@@ -4,7 +4,8 @@ cd /d "%~dp0"
 title FlashTap - One-Click Install
 
 REM Unblock files from Mark-of-the-Web (GitHub ZIP / browser download)
-powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem '%~dp0' -Recurse -File | Unblock-File 2>$null" >nul 2>&1
+REM Use -ErrorAction SilentlyContinue instead of 2>$null (cmd parses 2>$null incorrectly)
+powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem '%~dp0' -Recurse -File | Unblock-File -ErrorAction SilentlyContinue" >nul 2>&1
 
 echo =============================================
 echo   FlashTap - AI Programming Assistant
