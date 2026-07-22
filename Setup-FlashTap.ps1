@@ -33,6 +33,7 @@ if (-not $env:FLASHTAP_ORIGINAL_PROFILE) {
 Write-Host "  [调试] FLASHTAP_ORIGINAL_USER=$env:FLASHTAP_ORIGINAL_USER, FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE" -ForegroundColor DarkGray
 
 $ErrorActionPreference = 'Continue'
+$script:installFailed = $false   # 跟踪是否有关键步骤失败，用于最终退出码
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -504,6 +505,7 @@ $vscodeResult = Run-Script -FilePath $vscodeScript -Description '第二步：安
 if ($vscodeResult) {
     Write-Log '[成功] VS Code 安装配置完成' 'Green'
 } else {
+    $script:installFailed = $true
     Write-Log '[错误] VS Code 安装配置失败，后续步骤可能无法完成' 'Red'
     Write-Log '[信息] 将继续执行后续步骤（模型下载等），请稍后手动安装 VS Code' 'Yellow'
 }
@@ -1060,16 +1062,39 @@ int main() {
             }
         }
 
-        # 为确保中文界面和 Continue 配置生效，关闭目标用户的 VS Code 进程后重新启动
-        # 用提权前的原始用户名过滤，避免提权后 $env:USERNAME 变成 Administrator 误杀
-        $targetUserForKill = if ($OriginalUsername) { $OriginalUsername } else { $env:USERNAME }
-        if ($existingCode.Count -gt 0) {
-            Write-Log "[信息] 关闭目标用户 [$targetUserForKill] 的 VS Code 进程以应用新配置..." 'Cyan'
-            & taskkill /F /FI "USERNAME eq $targetUserForKill" /IM Code.exe 2>&1 | Out-Null
-            Start-Sleep 3
+        # 关键修复：VS Code 必须以非管理员身份运行。
+        # 右键"以管理员运行"后脚本进程是提权的 → 直接 Start-Process 让 VS Code 继承
+        # 管理员上下文 → Electron 主进程 JS 崩溃（"r.toLowerCase is not a function"）。
+        # -Verb RunAsUser 在已以真实用户(61959)运行时会弹"以其他用户身份运行"安全窗口。
+        # 正确方案：通过 explorer.exe 中转。explorer.exe 始终以非提权身份运行，通过它
+        # 打开 .lnk 快捷方式启动 VS Code，即可保证 VS Code 以普通用户权限运行。
+        $vscArgs = @('--locale=zh-cn', $CppWorkspace)
+        $launchArgsStr = ($vscArgs | ForEach-Object {
+            if ($_ -match '\s') { "`"$_`"" } else { $_ }
+        }) -join ' '
+        $needDeElevate = ($OriginalUsername -and $OriginalUsername -ne $env:USERNAME)
+
+        if ($needDeElevate) {
+            # 旧流程：Administrator → 切换回真实用户，用 RunAsUser
+            Write-Log '   [信息] 使用 RunAsUser 降权到目标用户启动 VS Code...' 'Cyan'
+            try {
+                Start-Process -FilePath $vscExe -ArgumentList $launchArgsStr -Verb RunAsUser -ErrorAction Stop
+            } catch {
+                Write-Log '   [警告] RunAsUser 失败，退回 explorer 中转启动' 'Yellow'
+            }
+        } else {
+            # 新流程：通过 explorer + .lnk 以普通用户身份启动 VS Code
+            Write-Log '   [信息] 通过 explorer 以普通用户身份启动 VS Code...' 'Cyan'
+            $lnkPath = Join-Path $env:TEMP "flashtap_vscode_$(Get-Date -Format 'yyyyMMddHHmmss').lnk"
+            $ws = New-Object -ComObject WScript.Shell
+            $lnk = $ws.CreateShortcut($lnkPath)
+            $lnk.TargetPath = $vscExe
+            $lnk.Arguments = $launchArgsStr
+            $lnk.Save()
+            Start-Process explorer.exe -ArgumentList $lnkPath
+            Start-Sleep 4
+            Remove-Item $lnkPath -Force -ErrorAction SilentlyContinue
         }
-        # 不用 -NoNewWindow，让 VS Code 在独立窗口启动，避免其 stdout 混入安装终端
-        Start-Process -FilePath $vscExe -ArgumentList $vscArgs
         Start-Sleep 3
         Write-Log '[成功] VS Code 已启动，中文界面 + Continue 配置已就绪' 'Green'
     } catch {
@@ -1077,6 +1102,21 @@ int main() {
     }
 } else {
     Write-Log '[警告] 未找到 VS Code，请手动从开始菜单打开' 'Yellow'
+}
+
+# ── 桌面快捷方式（Bug #22：含 --locale=zh-cn 确保双击打开也是中文） ──
+try {
+    $desktopDir = [Environment]::GetFolderPath('Desktop')
+    $lnkPath = Join-Path $desktopDir 'FlashTap.lnk'
+    $ws = New-Object -ComObject WScript.Shell
+    $lnk = $ws.CreateShortcut($lnkPath)
+    $lnk.TargetPath = $vscExe
+    $lnk.Arguments = "--locale=zh-cn `"$CppWorkspace`" --user-data-dir=`"$RealAppData\Code`""
+    $lnk.WorkingDirectory = $CppWorkspace
+    $lnk.Save()
+    Write-Log '[成功] 桌面已创建 FlashTap 快捷方式（含中文 + Continue 配置）' 'Green'
+} catch {
+    Write-Log '[警告] 桌面快捷方式创建失败，可手动创建' 'Yellow'
 }
 
 # ── 第四步半：环境自检（README 步骤10，非阻塞） ──
@@ -1160,5 +1200,9 @@ try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { cmd /c p
     Write-Host ''
     Write-Host '按任意键退出...' -ForegroundColor Cyan
     try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { cmd /c pause >nul }
+    $script:installFailed = $true
 }
-exit 0
+# 退出码反映整体安装结果：0=全部成功, 1=有失败步骤或异常
+$finalExitCode = if ($script:installFailed) { 1 } else { 0 }
+Write-Log "[信息] 安装器最终退出码: $finalExitCode" 'Cyan'
+exit $finalExitCode
