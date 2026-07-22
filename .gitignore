@@ -1,0 +1,45 @@
+# ============================================
+# FlashTap - .gitignore
+# ============================================
+
+# === 大文件（不上传 Git，分发时单独下载） ===
+*.zip
+*.exe
+*.vsix
+*.gguf
+*.bin
+*.pth
+*.safetensors
+
+# === 模型目录 ===
+models/
+
+# === VSIX 离线扩展（放项目根目录即可被脚本检测） ===
+vsix_stage/
+*.vsix
+
+# === 运行时日志 ===
+*.log
+
+# === Python 缓存 ===
+__pycache__/
+*.pyc
+*.pyo
+
+# === 运行时临时文件 ===
+flashtap-user.txt
+.flashtap-env.txt
+.ollama_latest_version
+
+# === IDE / 编辑器 ===
+.vscode/
+.codebuddy/
+.idea/
+
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Git 自身 ===
+.git/

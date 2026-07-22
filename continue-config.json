@@ -1,0 +1,17 @@
+{
+  "models": [
+    {
+      "title": "FlashTap-7B",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b",
+      "apiBase": "http://localhost:11434"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "FlashTap-7B",
+    "provider": "ollama",
+    "model": "qwen2.5-coder:7b",
+    "apiBase": "http://localhost:11434"
+  },
+  "allowAnonymousTelemetry": false
+}

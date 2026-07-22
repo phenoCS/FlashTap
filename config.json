@@ -1,0 +1,15 @@
+{
+  "models": [
+    {
+      "title": "Autodetect",
+      "provider": "ollama",
+      "model": "AUTODETECT"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Autodetect",
+    "provider": "ollama",
+    "model": "AUTODETECT"
+  },
+  "allowAnonymousTelemetry": false
+}
