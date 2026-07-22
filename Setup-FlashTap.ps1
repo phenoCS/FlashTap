@@ -37,13 +37,10 @@ $script:installFailed = $false   # 跟踪是否有关键步骤失败，用于最
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-try {
-    $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-    $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-    [System.Net.WebRequest]::DefaultWebProxy = $proxy
-} catch {
-    Write-Host '  [信息] 代理检测跳过' -ForegroundColor DarkGray
-}
+# 自动继承系统代理设置
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
 
 $PROJECT_DIR = $PSScriptRoot
 if ((-not $PROJECT_DIR) -or ($PROJECT_DIR -eq '')) {
@@ -137,21 +134,20 @@ FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
     $envContent | Out-File -FilePath $envFile -Encoding UTF8 -Force
     Write-Log "[调试] 写入环境文件: $envFile" 'DarkGray'
 
-    $ec = 1
+    # 用 & 直接调用 powershell.exe（同窗口，日志直接输出到当前终端）
+    # 不用 cmd /c（中文路径在 cmd 下会乱码）
+    # 用 -Command 方式调用，路径用单引号包裹避免特殊字符问题
+    $psArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $FilePath)
+    if ($ArgumentList.Count -gt 0) {
+        $psArgs += $ArgumentList
+    }
+
+    $ec = 1  # 默认失败
     try {
-        Write-Log "[信息] 正在启动子脚本: $FilePath" 'Cyan'
-        $global:LASTEXITCODE = $null
-        if ($ArgumentList.Count -gt 0) {
-            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $FilePath @ArgumentList
-        } else {
-            & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $FilePath
-        }
-        if ($global:LASTEXITCODE -ne $null) {
-            $ec = [int]$global:LASTEXITCODE
-        } else {
-            $ec = 1
-            Write-Log '[警告] 子进程未返回退出码（可能崩溃或语法错误）' 'Yellow'
-        }
+        # 用 Start-Process -PassThru 可靠获取子进程退出码
+        # （不能用 $global:LASTEXITCODE：& 调用设置的是函数局部作用域，取不到真实退出码）
+        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $psArgs -Wait -PassThru -NoNewWindow -ErrorAction Stop
+        $ec = $proc.ExitCode
     } catch {
         $ec = 1
         Write-Log "[错误] 执行子脚本异常: $($_.Exception.Message)" 'Red'
@@ -372,19 +368,39 @@ if (-not $pyInfo) {
 
     $pyInstaller = Join-Path $env:TEMP 'python-3.12.7-amd64.exe'
 
+    # 本地优先：离线包场景，打包目录已含 Python 安装器则直接复用，零网络
+    $localPy = Join-Path $PROJECT_DIR 'python-3.12.7-amd64.exe'
+    if (Test-Path $localPy) {
+        try {
+            $lb = [System.IO.File]::ReadAllBytes($localPy)
+            if ($lb.Length -gt 30MB -and $lb[0] -eq 0x4D -and $lb[1] -eq 0x5A) {
+                Unblock-File -Path $localPy -ErrorAction SilentlyContinue
+                Write-Log "[信息] 使用本地 Python 安装器（离线）: $localPy"
+                $pyInstaller = $localPy
+                $pyDownloaded = $true
+            } else {
+                Write-Log '[警告] 本地 Python 安装器无效，改用在线下载' 'Yellow'
+            }
+        } catch {
+            Write-Log '[警告] 本地 Python 安装器读取失败，改用在线下载' 'Yellow'
+        }
+    }
+
     # 华为镜像优先（国内快），官方源兜底
     $pyUrls = @(
         'https://mirrors.huaweicloud.com/python/3.12.7/python-3.12.7-amd64.exe',
+        'https://registry.npmmirror.com/-/binary/python/3.12.7/python-3.12.7-amd64.exe',
+        'https://mirrors.tuna.tsinghua.edu.cn/python/3.12.7/python-3.12.7-amd64.exe',
         'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe'
     )
 
-    $pyDownloaded = $false
-    foreach ($url in $pyUrls) {
+    if (-not $pyDownloaded) {
+        foreach ($url in $pyUrls) {
         Write-Log "[信息] 正在下载 Python 3.12.7: $url"
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
-            $req.Timeout = 60000
-            $req.ReadWriteTimeout = 120000
+            $req.Timeout = 90000
+            $req.ReadWriteTimeout = 180000
             $resp = $req.GetResponse()
             $totalBytes = $resp.ContentLength
             $respStream = $resp.GetResponseStream()
@@ -417,6 +433,7 @@ if (-not $pyInfo) {
             Remove-Item $pyInstaller -Force -ErrorAction SilentlyContinue
         }
     }
+    }
 
     if ($pyDownloaded) {
         Write-Log '[信息] 正在静默安装 Python 3.12.7（为所有用户，自动加入 PATH）...'
@@ -426,6 +443,8 @@ if (-not $pyInfo) {
             # InstallAllUsers=1 需要管理员权限（bat 已提权，OK）
             # PrependPath=1 自动加入 PATH
             # Include_test=0 不装测试套件（省空间）
+            # 解除 Mark-of-the-Web，防止空白机 SmartScreen/Defender 拦截静默安装导致卡死
+            Unblock-File -Path $pyInstaller -ErrorAction SilentlyContinue
             $pyProc = Start-Process -FilePath $pyInstaller -ArgumentList '/quiet', 'InstallAllUsers=1', 'PrependPath=1', 'Include_test=0' -Wait -PassThru
             $pyExitCode = if ($pyProc) { $pyProc.ExitCode } else { -1 }
 
@@ -510,9 +529,21 @@ if ($vscodeResult) {
     Write-Log '[信息] 将继续执行后续步骤（模型下载等），请稍后手动安装 VS Code' 'Yellow'
 }
 
-# ── 第二步半：C++ 编译环境配置（不阻塞主流程） ──
+# ── 第二步半：C++ 编译环境配置（必装项：F5 编译调试必需） ──
+$CppWorkspace = 'C:\FlashTap\cpp-workspace'
 $cppScript = [System.IO.Path]::Combine($PROJECT_DIR, 'setup-cpp-env.ps1')
-$null = Run-Script -FilePath $cppScript -Description 'C++ 编译环境配置（可选，不影响主流程）'
+Write-Log '[信息] 开始配置 C++ 编译环境（MinGW-w64，必装）...' 'Cyan'
+$cppResult = Run-Script -FilePath $cppScript -Description 'C++ 编译环境配置'
+if ($cppResult) {
+    Write-Log '[成功] C++ 编译环境配置完成（按 F5 即可编译调试）' 'Green'
+} else {
+    # 关键修复：C++ 编译环境失败（如离线包缺失/下载失败）时，不再中断整个安装，
+    # 否则 VS Code 不会启动，用户看到"啥也没弹出来"。VS Code + 本地 AI 对话是核心功能，
+    # 即使 F5 调试暂不可用也应保证可用。
+    Write-Log '[警告] C++ 编译环境配置失败（F5 编译调试可能暂不可用）。' 'Yellow'
+    Write-Log '[信息] 不影响 VS Code + 本地 AI 对话，将继续启动 VS Code。' 'Yellow'
+    Write-Log '[信息] 如需 F5 调试，请把 mingw64.zip（MinGW-w64）放到 FlashTap 目录后重新运行本脚本。' 'Yellow'
+}
 
 # ── 第三步：部署 AI 代码模型 ──
 $downloadScript = [System.IO.Path]::Combine($PROJECT_DIR, 'download-models.py')
@@ -568,12 +599,11 @@ else {
 
     # 用简单提示测试模型
     Write-Log '  [信息] 正在测试模型响应...' 'Cyan'
-    $verifyResult = & $ollamaExe list 2>&1
-    if ("$verifyResult" -match 'qwen2.5-coder') {
-        Write-Log '[成功] 模型验证通过，qwen2.5-coder:7b 已就绪' 'Green'
+    $verifyProc = Start-Process -FilePath $ollamaExe -ArgumentList 'run qwen2.5-coder:7b hi' -Wait -NoNewWindow -PassThru
+    if ($verifyProc -and $verifyProc.ExitCode -eq 0) {
+        Write-Log '[成功] 模型验证通过，可以正常对话' 'Green'
     } else {
         Write-Log '[警告] 模型验证未通过，Continue 可能无法正常调用' 'Yellow'
-        Write-Log "[调试] ollama list 输出: $verifyResult" 'DarkGray'
     }
 }
 
@@ -664,10 +694,20 @@ if ($existingCode.Count -gt 0) {
 # ── 启动 VS Code（强制中文界面 + 自动连接 WSL C++ 环境） ──
 if ($vscExe) {
     try {
-        $vscArgs = @('--locale=zh-cn')
-        $distroFile = Join-Path $PSScriptRoot '.wsl-distro-name'
+        # R3 修复：非 WSL（Windows MinGW）分支也必须打开本地 C++ 工作区，
+        # 否则安装结束自动启动的 VS Code 是空白窗（没有示例工程、没有 F5 调试模板）。
+        # 桌面快捷方式已带 $CppWorkspace，这里保持一致。
+        $vscArgs = @('--locale=zh-cn', "`"$CppWorkspace`"")
 
-        if (Test-Path $distroFile) {
+        # R5 修复：WSL 分支已废弃（setup-cpp-env 不再生成 .wsl-distro-name，架构统一 Windows MinGW）。
+        # 用 $false 永久禁用 WSL 远程工作区逻辑，消除其与 Windows MinGW 配置矛盾的"炸弹"；
+        # 同时把原 WSL 分支内的 $RealAppData/$RealUserProfile 定义提升到此处，供下方信任设置段使用。
+        # 注：主脚本提权运行，开头已把 $env:USERPROFILE/$env:APPDATA 重定义为目标用户，
+        # 因此这里直接用 $env:APPDATA 即指向真实运行 VS Code 的用户目录。
+        $RealUserProfile = if ($OriginalUserProfile) { $OriginalUserProfile } else { $env:USERPROFILE }
+        $RealAppData     = if ($OriginalUserProfile) { Join-Path $OriginalUserProfile 'AppData\Roaming' } else { $env:APPDATA }
+
+        if ($false) {
             $distroName = (Get-Content $distroFile -Raw -ErrorAction SilentlyContinue).Trim()
             if ($distroName) {
                 Write-Log "[信息] 准备 WSL 连接: $distroName" 'Cyan'
@@ -1008,8 +1048,18 @@ int main() {
 
                 # ── 原生 VS Code 中文语言包（手动下载解压，不启动 VS Code，杜绝双窗口）──
                 Write-Log "[信息] 为原生 VS Code 安装中文语言包（静默，不弹窗）..." 'Cyan'
+
+                # 关键修复：主安装脚本以管理员（提权）身份运行，此时 $env:USERPROFILE/$env:APPDATA
+                # 指向 Administrator；而 VS Code 实际以【原始普通用户】(-Verb RunAsUser) 启动并读取
+                # 该用户目录下的配置。因此所有 VS Code 用户级路径（扩展目录 / locale.json /
+                # settings.json）必须指向原始用户目录，否则配置"写了但不生效"，表现为：
+                # 中文不生效、工作区信任关不掉、打开本地工作区仍进"受限模式（保护模式）"，
+                # 扩展（Continue、C/C++）全被禁用，只能看代码。
+                $RealUserProfile = if ($OriginalUserProfile) { $OriginalUserProfile } else { $env:USERPROFILE }
+                $RealAppData     = if ($OriginalUserProfile) { Join-Path $OriginalUserProfile 'AppData\Roaming' } else { $env:APPDATA }
+
                 try {
-                    $vscExtDir = Join-Path $env:USERPROFILE '.vscode\extensions'
+                    $vscExtDir = Join-Path $RealUserProfile '.vscode\extensions'
                     # 检查是否已安装（避免重复下载）
                     $existingLang = Get-ChildItem -Path $vscExtDir -Directory -Filter 'ms-ceintl.vscode-language-pack-zh-hans-*' -ErrorAction SilentlyContinue
                     if (-not $existingLang) {
@@ -1019,12 +1069,14 @@ int main() {
                         Write-Log '  [信息] 正在下载中文语言包...' 'Cyan'
                         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-                        try {
-                            $proxy = [System.Net.WebRequest]::GetSystemWebProxy()
-                            $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
-                            [System.Net.WebRequest]::DefaultWebProxy = $proxy
-                        } catch {}
-                        Invoke-WebRequest -Uri 'https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MS-CEINTL/vsextensions/vscode-language-pack-zh-hans/latest/vspackage' -OutFile $langVsix -UseBasicParsing
+# 自动继承系统代理设置
+$proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+$proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+[System.Net.WebRequest]::DefaultWebProxy = $proxy
+                        # 关键修复：必须加 -TimeoutSec，否则 marketplace 不可达时 Invoke-WebRequest
+                        # 会无限挂起（try/catch 救不了无限挂起），整个安装看起来"卡死"。
+                        # 超时后转为异常被外层 catch 捕获，仅跳过中文包并继续安装，不中断。
+                        Invoke-WebRequest -Uri 'https://marketplace.visualstudio.com/_apis/public/gallery/publishers/MS-CEINTL/vsextensions/vscode-language-pack-zh-hans/latest/vspackage' -OutFile $langVsix -UseBasicParsing -TimeoutSec 60 -MaximumRedirection 5
 
                         # VSIX 本质是 ZIP，直接解压
                         Remove-Item -Path $langExtract -Recurse -Force -ErrorAction SilentlyContinue
@@ -1044,7 +1096,7 @@ int main() {
                     }
 
                     # 写入 locale.json 确保中文生效
-                    $vscUserDir = Join-Path $env:APPDATA 'Code\User'
+                    $vscUserDir = Join-Path $RealAppData 'Code\User'
                     New-Item -ItemType Directory -Path $vscUserDir -Force -ErrorAction SilentlyContinue | Out-Null
                     Set-Content -Path (Join-Path $vscUserDir 'locale.json') -Value '{"locale":"zh-cn"}' -Encoding UTF8 -ErrorAction SilentlyContinue
                     Write-Log "[成功] 原生 VS Code 中文语言包已安装" 'Green'
@@ -1060,16 +1112,52 @@ int main() {
                 )
                 Write-Log "[信息] 自动连接 WSL 环境: $distroName" 'Cyan'
             }
+
+            # ── 真正关闭 VS Code 工作区信任（修复"受限模式 / 保护模式"）──
+            # 这是"桌面快捷方式打开 VS Code 后只能看代码、所有功能用不了"的根因。
+            # 工作区信任是【用户级】策略，必须写入原始用户的
+            # $RealAppData\Code\User\settings.json 的 security.workspace.trust.enabled=false。
+            # 注意：之前注释里写的"已关闭工作区信任（settings.json）"从未真正执行，
+            # 且即便执行也写到了 Administrator 目录而非实际运行 VS Code 的普通用户目录。
+            try {
+                $trustUserDir = Join-Path $RealAppData 'Code\User'
+                New-Item -ItemType Directory -Path $trustUserDir -Force -ErrorAction SilentlyContinue | Out-Null
+                $trustSettingsPath = Join-Path $trustUserDir 'settings.json'
+                $trustSettings = @{}
+                if (Test-Path -LiteralPath $trustSettingsPath) {
+                    try {
+                        # PS 5.1 兼容：ConvertFrom-Json 无 -AsHashtable 参数，改用 PSObject 转哈希表，
+                        # 否则在 Windows 默认 PS 5.1 上抛异常、被 catch 吞掉，信任追加静默失败。
+                        $raw = Get-Content -Path $trustSettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                        $raw.PSObject.Properties | ForEach-Object { $trustSettings[$_.Name] = $_.Value }
+                    } catch { $trustSettings = @{} }
+                }
+                if ($null -eq $trustSettings) { $trustSettings = @{} }
+                $trustSettings['security.workspace.trust.enabled'] = $false
+                $trustSettings | ConvertTo-Json -Depth 10 | Set-Content -Path $trustSettingsPath -Encoding UTF8 -ErrorAction SilentlyContinue
+                Write-Log '[成功] 已关闭 VS Code 工作区信任（受限模式），打开本地工作区不再禁用扩展' 'Green'
+            } catch {
+                Write-Log "[警告] 关闭工作区信任失败（可手动在 VS Code 设置中关闭 Workspace Trust）: $($_.Exception.Message)" 'Yellow'
+            }
         }
 
+        # 为确保中文界面和 Continue 配置生效，关闭目标用户的 VS Code 进程后重新启动
+        # 用提权前的原始用户名过滤，避免提权后 $env:USERNAME 变成 Administrator 误杀
+        $targetUserForKill = if ($OriginalUsername) { $OriginalUsername } else { $env:USERNAME }
+        if ($existingCode.Count -gt 0) {
+            Write-Log "[信息] 关闭目标用户 [$targetUserForKill] 的 VS Code 进程以应用新配置..." 'Cyan'
+            & taskkill /F /FI "USERNAME eq $targetUserForKill" /IM Code.exe 2>&1 | Out-Null
+            Start-Sleep 3
+        }
         # 关键修复：VS Code 必须以非管理员身份运行。
         # 右键"以管理员运行"后脚本进程是提权的 → 直接 Start-Process 让 VS Code 继承
         # 管理员上下文 → Electron 主进程 JS 崩溃（"r.toLowerCase is not a function"）。
         # -Verb RunAsUser 在已以真实用户(61959)运行时会弹"以其他用户身份运行"安全窗口。
         # 正确方案：通过 explorer.exe 中转。explorer.exe 始终以非提权身份运行，通过它
         # 打开 .lnk 快捷方式启动 VS Code，即可保证 VS Code 以普通用户权限运行。
-        $vscArgs = @('--locale=zh-cn', $CppWorkspace)
-        $launchArgsStr = ($vscArgs | ForEach-Object {
+        $launchArgs = $vscArgs + @("--user-data-dir=$RealAppData\Code")
+        # 将参数数组转为单个参数字符串（空格分隔，含空格者加引号）
+        $launchArgsStr = ($launchArgs | ForEach-Object {
             if ($_ -match '\s') { "`"$_`"" } else { $_ }
         }) -join ' '
         $needDeElevate = ($OriginalUsername -and $OriginalUsername -ne $env:USERNAME)
@@ -1078,7 +1166,7 @@ int main() {
             # 旧流程：Administrator → 切换回真实用户，用 RunAsUser
             Write-Log '   [信息] 使用 RunAsUser 降权到目标用户启动 VS Code...' 'Cyan'
             try {
-                Start-Process -FilePath $vscExe -ArgumentList $launchArgsStr -Verb RunAsUser -ErrorAction Stop
+                Start-Process -FilePath $vscExe -ArgumentList $launchArgs -Verb RunAsUser -ErrorAction Stop
             } catch {
                 Write-Log '   [警告] RunAsUser 失败，退回 explorer 中转启动' 'Yellow'
             }
@@ -1096,7 +1184,36 @@ int main() {
             Remove-Item $lnkPath -Force -ErrorAction SilentlyContinue
         }
         Start-Sleep 3
-        Write-Log '[成功] VS Code 已启动，中文界面 + Continue 配置已就绪' 'Green'
+        # 已关闭工作区信任（settings.json），打开任意文件夹都不会再进入"保护模式"禁用 Continue。
+        # 二次以 --reuse-window 复用同一窗口并强制重载，确保中文语言包在首窗即生效。
+        # 注意：--locale=zh-cn 已在首启的 $launchArgs/$vscArgs 中，此处不重复添加
+        # （否则 VS Code 警告 "locale is defined more than once"）。
+        try {
+            if ($needDeElevate) {
+                $codeCli = Join-Path (Split-Path -Parent $vscExe) 'bin\code.cmd'
+                if (-not (Test-Path -LiteralPath $codeCli)) { $codeCli = Join-Path (Split-Path -Parent $vscExe) 'code.cmd' }
+                if (-not (Test-Path -LiteralPath $codeCli)) { $codeCli = $vscExe }
+                $reuseArgs = @('--reuse-window') + $launchArgs
+                try {
+                    Start-Process -FilePath $codeCli -ArgumentList $reuseArgs -Verb RunAsUser -ErrorAction Stop
+                } catch {
+                    Start-Process -FilePath $codeCli -ArgumentList $reuseArgs -ErrorAction SilentlyContinue
+                }
+            } else {
+                # 新流程：同样通过 explorer + .lnk 中转（已运行的 VS Code 是非提权的，复用窗口即可）
+                $lnkPath2 = Join-Path $env:TEMP "flashtap_vscode_r_$(Get-Date -Format 'yyyyMMddHHmmss').lnk"
+                $ws2 = New-Object -ComObject WScript.Shell
+                $lnk2 = $ws2.CreateShortcut($lnkPath2)
+                $lnk2.TargetPath = $vscExe
+                $lnk2.Arguments = "--reuse-window $launchArgsStr"
+                $lnk2.Save()
+                Start-Process explorer.exe -ArgumentList $lnkPath2
+                Start-Sleep 3
+                Remove-Item $lnkPath2 -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+        Start-Sleep 2
+        Write-Log '[成功] VS Code 已启动，中文界面 + Continue 配置已就绪（已关闭工作区信任）' 'Green'
     } catch {
         Write-Log '[错误] VS Code 启动失败，请手动打开' 'Red'
     }
@@ -1104,19 +1221,35 @@ int main() {
     Write-Log '[警告] 未找到 VS Code，请手动从开始菜单打开' 'Yellow'
 }
 
-# ── 桌面快捷方式（Bug #22：含 --locale=zh-cn 确保双击打开也是中文） ──
+# ── 在桌面创建 FlashTap 快捷方式（指向已配置的 VS Code，打开即用、含全套环境）──
 try {
-    $desktopDir = [Environment]::GetFolderPath('Desktop')
-    $lnkPath = Join-Path $desktopDir 'FlashTap.lnk'
-    $ws = New-Object -ComObject WScript.Shell
-    $lnk = $ws.CreateShortcut($lnkPath)
-    $lnk.TargetPath = $vscExe
-    $lnk.Arguments = "--locale=zh-cn `"$CppWorkspace`" --user-data-dir=`"$RealAppData\Code`""
-    $lnk.WorkingDirectory = $CppWorkspace
-    $lnk.Save()
-    Write-Log '[成功] 桌面已创建 FlashTap 快捷方式（含中文 + Continue 配置）' 'Green'
+    if ($vscExe -and (Test-Path -LiteralPath $vscExe)) {
+        if (-not (Test-Path -LiteralPath $CppWorkspace)) { New-Item -ItemType Directory -Path $CppWorkspace -Force | Out-Null }
+        $wshell = New-Object -ComObject WScript.Shell
+        $desktop = [Environment]::GetFolderPath('Desktop')
+        $lnkPath = Join-Path $desktop 'FlashTap.lnk'
+        $shortcut = $wshell.CreateShortcut($lnkPath)
+        $shortcut.TargetPath = $vscExe
+        # R1/R4 加固：--user-data-dir 指向目标用户标准目录，确保双击快捷方式启动的 VS Code
+        # 与安装扩展时同一用户数据，避免跨账户 UAC 提权时读不到扩展/配置（只能看代码）。
+        # 使用 $RealAppData（在 VS Code 启动段中已根据 OriginalUserProfile 计算），
+        # 而非 $env:APPDATA（提权后可能指向 Administrator）。
+        $shortcut.Arguments = "--locale=zh-cn `"$CppWorkspace`" --user-data-dir=`"$RealAppData\Code`""
+        $shortcut.WorkingDirectory = $CppWorkspace
+        $shortcut.Description = 'FlashTap - 中文 VS Code + 本地 AI + C++ 调试'
+        # 图标：默认用 VS Code 自带图标；后期换皮可改为自己的 .ico 路径（全链路开源，无版权问题）
+        $iconPath = Join-Path (Split-Path -Parent $vscExe) 'resources\app\resources\win32\code.ico'
+        if (-not (Test-Path -LiteralPath $iconPath)) { $iconPath = $vscExe }
+        $shortcut.IconLocation = "$iconPath,0"
+        $shortcut.Save()
+        # 去除快捷方式可能的网络标记（Mark-of-the-Web），避免 Windows 弹"来自网络"安全警告
+        try { Unblock-File -Path $lnkPath -ErrorAction SilentlyContinue } catch {}
+        Write-Log '[成功] 桌面已创建 FlashTap 快捷方式（打开即用，含全部环境）' 'Green'
+    } else {
+        Write-Log '[警告] 未找到 VS Code，跳过桌面快捷方式创建' 'Yellow'
+    }
 } catch {
-    Write-Log '[警告] 桌面快捷方式创建失败，可手动创建' 'Yellow'
+    Write-Log "[警告] 桌面快捷方式创建失败（不影响使用）: $($_.Exception.Message)" 'Yellow'
 }
 
 # ── 第四步半：环境自检（README 步骤10，非阻塞） ──
@@ -1127,7 +1260,9 @@ if (Test-Path -LiteralPath $checkScript) {
     Write-Host '    环境自检' -ForegroundColor Cyan
     Write-Host '  ────────────────────────────────────────────' -ForegroundColor Cyan
     try {
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $checkScript
+        # 本应静默运行：用 -WindowStyle Hidden 隐藏窗口执行环境自检，
+        # 避免安装结束前又弹出一个可见的 PowerShell 窗口（自检结果已写入日志）。
+        Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$checkScript`"" -Wait
     } catch {
         Write-Log "[警告] 环境自检执行异常: $($_.Exception.Message)" 'Yellow'
     }
@@ -1160,7 +1295,7 @@ Write-Host '  Ctrl+L        在侧边栏打开 Continue 对话' -ForegroundColor
 Write-Host '  Ctrl+I        在编辑器内行内提问（Inline Chat）' -ForegroundColor White
 Write-Host '  Ctrl+Shift+R  选中代码后，让 AI 解释/优化' -ForegroundColor White
 Write-Host '  Ctrl+Alt+N    使用 Code Runner 一键运行当前代码' -ForegroundColor White
-Write-Host '  F5            启动调试（C/C++ 需要先配置 launch.json）' -ForegroundColor White
+Write-Host '  F5            启动调试（C/C++ 已预配置，打开桌面 FlashTap 图标进 C++ 示例直接按 F5）' -ForegroundColor White
 Write-Host ''
 Write-Host '  【如果 AI 没有反应，请按顺序排查】' -ForegroundColor Cyan
 Write-Host ''
