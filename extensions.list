@@ -1,8 +1,7 @@
 # VS Code 扩展白名单 - 纯本地编程助手
-# 只允许安装以下4个扩展，绝不卸载用户已有的其他扩展
-# 注意：ms-vscode.cpptools 不在此列表，因为它在 WSL 远端单独安装 linux-x64 版本
-#       如果在 Windows 端安装会拿到 Windows 二进制，导致 WSL 中报「二进制不兼容」
+# 只允许安装以下扩展，绝不卸载用户已有的其他扩展
+# 注意：ms-vscode.cpptools 由 setup-cpp-env.ps1 单独安装（code --install-extension --force），
+#       以确保安装到正确用户上下文（避免跨账户 UAC 提权问题）
 continue.continue
 ms-ceintl.vscode-language-pack-zh-hans
-ms-vscode-remote.remote-wsl
 formulahendry.code-runner

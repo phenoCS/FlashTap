@@ -1,31 +1,25 @@
-# Ollama 安装包 (太大，GitHub 限制 100MB)
-OllamaSetup.exe
+# Logs
+*.log
+install.log
 
-# Python
+# Temp / cache
 __pycache__/
 *.pyc
-*.pyo
+.env
 
-# 日志
-*.log
-OldLogs/
+# VS Code user data (runtime)
+.vscode/
 
-# 备份文件
-*.backup-*
-
-# 项目状态文档
-项目状态.txt
-
-# VS Code 用户配置 (含个人路径)
-vscode-settings.json
-
-# 模型文件 (太大)
-models/
-
-# 临时文件
+# FlashTap runtime artifacts
 .flashtap-env.txt
-flashtap-user.txt
-.ollama_latest_version
-.wsl-distro-namemingw64.zip  
-vsix_stage/  
-*.vsix 
+
+# IDE
+.idea/
+
+# Offline packages (distributed via GitHub Release, not in repo)
+mingw64.zip
+*.vsix
+
+# OS
+Thumbs.db
+Desktop.ini

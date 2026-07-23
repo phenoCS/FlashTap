@@ -1,4 +1,5 @@
 {
+    "security.workspace.trust.enabled": false,
     "terminal.integrated.profiles.windows": {
     "Command Prompt": {
         "path": "C:\\Windows\\System32\\cmd.exe",

@@ -130,18 +130,24 @@ function Expand-ArchiveRobust {
 function Add-ToUserPath {
     param([string]$Dir)
     try {
-        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if ([string]::IsNullOrEmpty($userPath)) { $userPath = '' }
-        if ($userPath -notmatch [regex]::Escape($Dir)) {
-            if ($userPath.EndsWith(';')) { $userPath = $userPath + $Dir }
-            else { $userPath = "$userPath;$Dir" }
-            [Environment]::SetEnvironmentVariable('Path', $userPath, 'User')
-            Write-Log "  已将 $Dir 加入用户 PATH" 'Green'
+        # 优先写入 Machine（系统）PATH：在提权跨账户场景下，
+        # [Environment]::SetEnvironmentVariable('Path',...,'User') 始终写入
+        # 当前进程 SID 对应的 HKCU，可能不是目标用户的注册表。
+        # Machine PATH 对所有用户生效，且已提权即可写入。
+        $targetScope = 'Machine'
+        $currentPath = [Environment]::GetEnvironmentVariable('Path', $targetScope)
+        if ([string]::IsNullOrEmpty($currentPath)) { $currentPath = '' }
+        $escapedDir = [regex]::Escape($Dir)
+        if ($currentPath -notmatch $escapedDir) {
+            if ($currentPath.EndsWith(';')) { $currentPath = $currentPath + $Dir }
+            else { $currentPath = "$currentPath;$Dir" }
+            [Environment]::SetEnvironmentVariable('Path', $currentPath, $targetScope)
+            Write-Log "  已将 $Dir 加入系统 PATH (Machine)" 'Green'
         } else {
             Write-Log '  PATH 已包含 MinGW，跳过' 'Green'
         }
         # 同步到当前进程，便于本次验证
-        if ($env:Path -notmatch [regex]::Escape($Dir)) { $env:Path = "$env:Path;$Dir" }
+        if ($env:Path -notmatch $escapedDir) { $env:Path = "$env:Path;$Dir" }
     } catch {
         Write-Log "  加入 PATH 失败（仍需手动添加）: $($_.Exception.Message)" 'Yellow'
     }
@@ -154,12 +160,35 @@ function Protect-Dir {
 }
 
 function Install-CpptoolsExtension {
-    # 将 C/C++ 扩展装入“原生 VS Code”（按 F5 调试必需），尽力而为
+    # 将 C/C++ 扩展装入"原生 VS Code"（按 F5 调试必需），尽力而为
+    # 优先用户级，其次系统级注册表（含 D 盘等非标准位置），最后兜底固定路径
     $cands = @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Microsoft VS Code\Code.exe'),
         (Join-Path ${env:ProgramFiles} 'Microsoft VS Code\Code.exe'),
         (Join-Path ([Environment]::GetEnvironmentVariable("ProgramFiles(x86)")) 'Microsoft VS Code\Code.exe')
     )
+    if ($env:ProgramW6432) {
+        $cands += (Join-Path $env:ProgramW6432 'Microsoft VS Code\Code.exe')
+    }
+
+    # 注册表查找（含 D 盘等非标准位置）
+    $regPaths = @('HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                  'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
+    foreach ($rp in $regPaths) {
+        try {
+            $entries = Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue
+            foreach ($e in $entries) {
+                if ($e.DisplayName -like '*Visual Studio Code*' -and $e.UninstallString) {
+                    $uninst = $e.UninstallString -replace '^"', '' -replace '"$', ''
+                    $dir = Split-Path -Parent $uninst
+                    $exe = Join-Path $dir 'Code.exe'
+                    if ($exe -notin $cands) { $cands += $exe }
+                }
+            }
+        } catch {}
+    }
+
     $codeExe = $null
     foreach ($c in $cands) { if (Test-Path -LiteralPath $c) { $codeExe = $c; break } }
     if (-not $codeExe) {
@@ -213,6 +242,10 @@ function Write-NativeConfig {
         $vscDir = Join-Path $WORKSPACE '.vscode'
         if (-not (Test-Path -LiteralPath $vscDir)) { New-Item -ItemType Directory -Path $vscDir -Force | Out-Null }
         if (-not (Test-Path -LiteralPath $WORKSPACE)) { New-Item -ItemType Directory -Path $WORKSPACE -Force | Out-Null }
+        # ASCII 临时目录：MinGW g++ 不兼容 Unicode 用户名路径（如 本人2），
+        # 编译时需写 .o 中间文件到 TMP/TEMP，路径含中文则报 Fatal error: can't create ...
+        $tmpDir = 'C:\FlashTap\tmp'
+        if (-not (Test-Path -LiteralPath $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
 
         $launchJson = @'
 {
@@ -226,7 +259,12 @@ function Write-NativeConfig {
             "args": [],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
-            "environment": [],
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "C:\\FlashTap\\mingw64\\bin;${env:PATH}"
+                }
+            ],
             "externalConsole": false,
             "MIMode": "gdb",
             "miDebuggerPath": "C:\\FlashTap\\mingw64\\bin\\gdb.exe",
@@ -261,7 +299,11 @@ function Write-NativeConfig {
                 "-std=c++17"
             ],
             "options": {
-                "cwd": "${fileDirname}"
+                "cwd": "${fileDirname}",
+                "env": {
+                    "TMP": "C:\\FlashTap\\tmp",
+                    "TEMP": "C:\\FlashTap\\tmp"
+                }
             },
             "problemMatcher": [
                 "$gcc"
@@ -312,7 +354,7 @@ function Test-GppReady {
         $gpp = Join-Path $BIN_DIR 'g++.exe'
         if (-not (Test-Path -LiteralPath $gpp)) { return $false }
         # 必须用绝对路径 $gpp 调用：首次安装时 mingw 尚未加入 PATH，
-        # 若用 `& g++.exe`（依赖 PATH）会因找不到命令而抛异常，误判为“未安装”。
+        # 若用 `& g++.exe`（依赖 PATH）会因找不到命令而抛异常，误判为"未安装"。
         $raw = & $gpp --version 2>&1
         $ver = @("$raw" -split [Environment]::NewLine) | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1
         if ($ver) { Write-Log "  检测到 g++: $($ver.Trim())" 'Green' }

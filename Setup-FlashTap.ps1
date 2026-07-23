@@ -22,14 +22,52 @@ if ($OriginalUsername -and $OriginalUsername -ne $env:USERNAME) {
     Write-Host "  [信息] 已切换到目标用户: $OriginalUsername" -ForegroundColor Cyan
 }
 
+# ── 自动从脚本路径检测目标用户（多账户机器提权跨账户场景）──
+# 场景：多用户 Windows 机器上，"右键→以管理员运行"后提权到了另一个管理员账户，
+#       导致 %USERNAME% 与脚本所在用户目录不一致。
+#       例如：脚本在 C:\Users\本人2\Downloads\ → 本人2 是目标用户，
+#       但提权后 $env:USERNAME 变成了 PYX。
+# 安全：在空白单用户机器上（脚本路径 = 当前用户目录），检测 = $env:USERNAME，
+#       不会触发任何切换，对原有行为零影响。
+if (-not $OriginalUsername) {
+    $detectedUser = $null
+    # 使用 $PSScriptRoot（脚本启动即可用，无需等 PROJECT_DIR 赋值）
+    $scriptRoot = $PSScriptRoot
+    if ((-not $scriptRoot) -or ($scriptRoot -eq '')) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    }
+    if ($scriptRoot) {
+        $normalizedPath = $scriptRoot -replace '\\', '/'
+        if ($normalizedPath -match '/Users/([^/]+)/') {
+            $candidate = $matches[1]
+            $candidateProfile = "C:\Users\$candidate"
+            # 仅当检测到的用户目录确实存在时生效（防止误匹配非用户路径）
+            if ((Test-Path -LiteralPath $candidateProfile) -and $candidate -ne $env:USERNAME) {
+                $detectedUser = $candidate
+                Write-Host "  [信息] 从脚本路径检测到目标用户: $detectedUser (当前提权用户: $env:USERNAME)" -ForegroundColor Cyan
+            }
+        }
+    }
+    if ($detectedUser) {
+        $OriginalUsername = $detectedUser
+        $OriginalUserProfile = $candidateProfile
+        # 切换环境变量到目标用户（与上方 param 切换逻辑保持一致）
+        $env:USERNAME = $OriginalUsername
+        $env:USERPROFILE = $OriginalUserProfile
+        $env:LOCALAPPDATA = Join-Path $OriginalUserProfile 'AppData\Local'
+        $env:APPDATA = Join-Path $OriginalUserProfile 'AppData\Roaming'
+        $env:HOMEPATH = "\Users\$detectedUser"
+        $env:HOMEDRIVE = ($OriginalUserProfile -split ':')[0] + ':'
+        Write-Host "  [信息] 已切换到目标用户: $detectedUser" -ForegroundColor Cyan
+    }
+}
+
 # 确保 FLASHTAP_ORIGINAL_* 环境变量已设置（子进程靠这个恢复用户上下文）
-# bat 文件可能已设置，这里做兜底
-if (-not $env:FLASHTAP_ORIGINAL_USER) {
-    $env:FLASHTAP_ORIGINAL_USER = $env:USERNAME
-}
-if (-not $env:FLASHTAP_ORIGINAL_PROFILE) {
-    $env:FLASHTAP_ORIGINAL_PROFILE = $env:USERPROFILE
-}
+# CRITICAL: Always reset based on current process user — never trust inherited values.
+# Previous runs may have set these as persistent env vars, causing context bleed
+# across different user accounts (e.g. PYX → 本人2).
+$env:FLASHTAP_ORIGINAL_USER = $env:USERNAME
+$env:FLASHTAP_ORIGINAL_PROFILE = $env:USERPROFILE
 Write-Host "  [调试] FLASHTAP_ORIGINAL_USER=$env:FLASHTAP_ORIGINAL_USER, FLASHTAP_ORIGINAL_PROFILE=$env:FLASHTAP_ORIGINAL_PROFILE" -ForegroundColor DarkGray
 
 $ErrorActionPreference = 'Continue'
@@ -1183,7 +1221,7 @@ $proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
             Start-Sleep 4
             Remove-Item $lnkPath -Force -ErrorAction SilentlyContinue
         }
-        Start-Sleep 3
+        Start-Sleep 6
         # 已关闭工作区信任（settings.json），打开任意文件夹都不会再进入"保护模式"禁用 Continue。
         # 二次以 --reuse-window 复用同一窗口并强制重载，确保中文语言包在首窗即生效。
         # 注意：--locale=zh-cn 已在首启的 $launchArgs/$vscArgs 中，此处不重复添加

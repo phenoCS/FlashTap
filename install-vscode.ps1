@@ -532,6 +532,34 @@ function Test-ExtensionInstalled {
     }
 }
 
+# 验证 Continue 扩展是否包含当前平台的原生二进制（Windows/Linux/macOS）。
+# Continue 依赖 ONNX Runtime 原生库，若 .vsix 缺少对应平台的 bin/ 目录，
+# 扩展虽安装成功但激活时会崩溃。此函数防止离线 .vsix 跨平台不兼容。
+function Test-ContinuePlatformValid {
+    param([string]$ExtRoot)
+    try {
+        $continueDirs = @(Get-ChildItem -Path $ExtRoot -Directory -Filter 'continue.continue-*' -ErrorAction SilentlyContinue)
+        if ($continueDirs.Count -eq 0) { return $true }  # 未安装，不作判断
+        $latest = $continueDirs | Sort-Object Name -Descending | Select-Object -First 1
+        # Continue v2.1+ 原生库在 bin/napi-v3/<platform>/<arch>/
+        # 非 Windows 平台（Linux/macOS）也会检查对应架构
+        $winBin = Join-Path $latest.FullName 'bin\napi-v3\win32'
+        $linuxBin = Join-Path $latest.FullName 'bin\napi-v3\linux'
+        $darwinBin = Join-Path $latest.FullName 'bin\napi-v3\darwin'
+        if ($IsWindows -or (-not $IsLinux -and -not $IsMacOS)) {
+            # Windows: 必须有 win32 目录
+            return (Test-Path -LiteralPath $winBin)
+        } elseif ($IsLinux) {
+            return (Test-Path -LiteralPath $linuxBin)
+        } elseif ($IsMacOS) {
+            return (Test-Path -LiteralPath $darwinBin)
+        }
+        return $false
+    } catch {
+        return $false
+    }
+}
+
 # 辅助：通过 code CLI 安装扩展，带 120s 超时保护（防止 marketplace 不可达时无限挂起）
 # 注意：参数必须以【数组】传入并用 @a 展开，否则 & $c $a 会把整串当作单个参数传给 code，导致安装静默失败。
 function Invoke-CodeInstall {
@@ -629,8 +657,18 @@ function Install-All-Extensions {
                 Write-Log "[信息] 发现本地扩展包，离线安装: $extId"
                 Invoke-CodeInstall -CliCmd $cliCmd -Arguments @('--install-extension', $localVsix, '--force')
                 if (Test-ExtensionInstalled -ExtensionId $extId -ExtRoot $extRoot) {
-                    Write-Log "[成功] 本地扩展安装成功: $extId" 'Green'
-                    $installed = $true
+                    # Continue 专项检查：验证离线 .vsix 包含当前平台原生库
+                    # 常见陷阱：.vsix 只有 Linux 二进制却装到 Windows上 → 激活报错
+                    if ($extId -eq 'continue.continue' -and -not (Test-ContinuePlatformValid -ExtRoot $extRoot)) {
+                        Write-Log '[警告] 离线 Continue .vsix 缺少当前平台原生库（如 win32），将回退在线安装' 'Yellow'
+                        # 清理残废的离线安装，避免阻塞后续在线安装
+                        $badDirs = @(Get-ChildItem -Path $extRoot -Directory -Filter 'continue.continue-*' -ErrorAction SilentlyContinue)
+                        foreach ($d in $badDirs) { Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+                        # $installed 保持 $false，触发下方在线安装回退
+                    } else {
+                        Write-Log "[成功] 本地扩展安装成功: $extId" 'Green'
+                        $successCount++; $installed = $true
+                    }
                 } else {
                     Write-Log '[警告] 本地扩展安装后校验失败，回退在线安装' 'Yellow'
                 }
