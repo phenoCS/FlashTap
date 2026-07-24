@@ -184,8 +184,19 @@ FLASHTAP_USER_SCOPE_ONLY=$env:FLASHTAP_USER_SCOPE_ONLY
     try {
         # 用 Start-Process -PassThru 可靠获取子进程退出码
         # （不能用 $global:LASTEXITCODE：& 调用设置的是函数局部作用域，取不到真实退出码）
-        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $psArgs -Wait -PassThru -NoNewWindow -ErrorAction Stop
-        $ec = $proc.ExitCode
+        #
+        # CRITICAL: PS 5.1 的 -Wait -NoNewWindow 在跨用户 UAC 提权场景下有死锁 bug
+        # 子进程退出后父进程 -Wait 永不返回（跨用户 console handle 无法正常清理）
+        # 改用 .NET Process.WaitForExit() 直接等 OS 进程句柄，并用超时兜底
+        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList $psArgs -PassThru -NoNewWindow -ErrorAction Stop
+        # 理论上不设上限（大文件下载可能 30+ 分钟），但加硬超时 120 分钟防真死锁
+        if (-not $proc.WaitForExit(7200000)) {
+            Write-Log "[错误] 子脚本超时（120 分钟），强制终止 ($($FilePath))" 'Red'
+            try { $proc.Kill() } catch { }
+            $ec = 1
+        } else {
+            $ec = $proc.ExitCode
+        }
     } catch {
         $ec = 1
         Write-Log "[错误] 执行子脚本异常: $($_.Exception.Message)" 'Red'
@@ -213,7 +224,9 @@ function Find-PythonExecutable {
     function Test-PyLauncher {
         param([string]$Path)
         try {
-            $probe = Start-Process -FilePath $Path -ArgumentList @('-3', '-c', "print('PROBE_OK')") -Wait -PassThru -NoNewWindow 2>$null
+            # 不用 -Wait（PS 5.1 bug），用 WaitForExit 带超时
+            $probe = Start-Process -FilePath $Path -ArgumentList @('-3', '-c', "print('PROBE_OK')") -PassThru -NoNewWindow 2>$null
+            $probe.WaitForExit(30000) | Out-Null
             return ($probe.ExitCode -eq 0)
         } catch { return $false }
     }
@@ -603,7 +616,12 @@ if (-not $downloadOk) {
 
     try {
         Write-Log '[信息] 正在执行 ollama pull qwen2.5-coder:7b（约 4GB，需 10-30 分钟）...' 'Cyan'
-        $pullProc = Start-Process -FilePath $ollamaExeForPull -ArgumentList 'pull', 'qwen2.5-coder:7b' -Wait -NoNewWindow -PassThru
+        # 不用 -Wait（PS 5.1 -Wait -NoNewWindow 在长耗时子进程上有概率死锁）
+        $pullProc = Start-Process -FilePath $ollamaExeForPull -ArgumentList 'pull', 'qwen2.5-coder:7b' -PassThru -NoNewWindow
+        if (-not $pullProc.WaitForExit(7200000)) {
+            Write-Log '[错误] ollama pull 超时（120 分钟），强制终止' 'Red'
+            try { $pullProc.Kill() } catch { }
+        }
         if ($pullProc -and $pullProc.ExitCode -eq 0) {
             Write-Log '[成功] 模型下载完成' 'Green'
             $downloadOk = $true
@@ -637,7 +655,12 @@ else {
 
     # 用简单提示测试模型
     Write-Log '  [信息] 正在测试模型响应...' 'Cyan'
-    $verifyProc = Start-Process -FilePath $ollamaExe -ArgumentList 'run qwen2.5-coder:7b hi' -Wait -NoNewWindow -PassThru
+    # 不用 -Wait（PS 5.1 bug），用 WaitForExit 带超时
+    $verifyProc = Start-Process -FilePath $ollamaExe -ArgumentList 'run qwen2.5-coder:7b hi' -PassThru -NoNewWindow
+    if (-not $verifyProc.WaitForExit(300000)) {
+        Write-Log '[警告] 模型测试超时（5 分钟），强制终止' 'Yellow'
+        try { $verifyProc.Kill() } catch { }
+    }
     if ($verifyProc -and $verifyProc.ExitCode -eq 0) {
         Write-Log '[成功] 模型验证通过，可以正常对话' 'Green'
     } else {

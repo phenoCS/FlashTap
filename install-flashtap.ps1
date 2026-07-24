@@ -660,7 +660,9 @@ function Start-Ollama {
             }
         } catch {
             Write-Log "  [信息] 第 $attempt 次检测异常: $($_.Exception.Message)"
+            Remove-Job $checkJob -Force -ErrorAction SilentlyContinue
         }
+        $checkJob = $null
     }
     if (-not $alreadyRunning) {
         Write-Log '  [信息] 多次检测后确认 Ollama 未运行，准备启动'
@@ -717,8 +719,10 @@ function Start-Ollama {
                 Remove-Job $probeJob -Force -ErrorAction SilentlyContinue
             }
         } catch {
+            Remove-Job $probeJob -Force -ErrorAction SilentlyContinue
             # 继续重试
         }
+        $probeJob = $null
         Write-Log "  [信息] 服务未就绪，继续等待... ($($i)/20)"
     }
     if (-not $ready) {
@@ -770,6 +774,9 @@ function Main {
     }
 
     Write-Host '  [成功] Ollama 安装完成，继续后续步骤...' -ForegroundColor Green
+    
+    # 清理所有残留 background job（避免阻塞进程退出）
+    Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
 }
 
 try {
@@ -784,6 +791,8 @@ try {
     Write-Host "  脚本行号: $($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
     Write-Host "  堆栈: $($_.ScriptStackTrace)" -ForegroundColor DarkGray
     Write-Host ''
+    Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
     exit 1
 }
+Get-Job | Remove-Job -Force -ErrorAction SilentlyContinue
 exit 0

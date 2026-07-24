@@ -16,10 +16,6 @@ __pycache__/
 # IDE
 .idea/
 
-# Offline packages (distributed via GitHub Release, not in repo)
-mingw64.zip
-*.vsix
-
 # OS
 Thumbs.db
 Desktop.ini
